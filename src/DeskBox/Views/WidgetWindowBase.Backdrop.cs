@@ -69,18 +69,34 @@ public abstract partial class WidgetWindowBase
             if (dwmThemeChanged)
             {
                 Win32Helper.SetWindowTheme(HWnd, isDark);
-                Win32Helper.ApplyFullWindowFrame(HWnd);
+                if (!IsRoundedMaterialBackdropActive)
+                {
+                    Win32Helper.ApplyFullWindowFrame(HWnd);
+                }
                 ApplyDwmBorderStyle(isDark);
             }
 
             int backdropType;
             bool controllerApplied = false;
 
-            if (materialType == SettingsService.WidgetMaterialTypeSolid)
+            bool useRoundedMaterial = materialType == SettingsService.WidgetMaterialTypeGlass ||
+                (WindowsCompatibilityService.UsesLegacyWindowAcrylic &&
+                 SettingsService.IsAcrylicMaterial(materialType));
+            if (useRoundedMaterial)
+            {
+                controllerApplied = ApplyRoundedMaterialBackdrop(
+                    materialType, isDark, surfaceOpacity, signature.MaterialIntensity);
+            }
+            if (!controllerApplied)
+            {
+                ClearRoundedMaterialBackdrop();
+            }
+
+            if (!controllerApplied && materialType == SettingsService.WidgetMaterialTypeSolid)
             {
                 controllerApplied = ApplySolidColorBackdrop(tintColor);
             }
-            else
+            else if (!controllerApplied)
             {
                 ClearSolidColorBackdrop();
 
@@ -147,6 +163,7 @@ public abstract partial class WidgetWindowBase
                 $"acrylicController={AcrylicController is { IsClosed: false } && AcrylicControllerAttached} " +
                 $"micaController={MicaController is not null && MicaControllerAttached} " +
                 $"solidColorBackdrop={IsSolidColorBackdropActive} " +
+                $"roundedMaterial={IsRoundedMaterialBackdropActive} " +
                 $"legacyAccent={LegacyAccentBackdropActive}");
             if (WindowsCompatibilityService.UsesLegacyWindowAcrylic)
             {
@@ -154,6 +171,7 @@ public abstract partial class WidgetWindowBase
                     $"[Backdrop.Win10] hwnd=0x{HWnd.ToInt64():X} requested={requestedMaterialType} " +
                     $"resolved={materialType} desktopAcrylicSupported={WindowsCompatibilityService.SupportsDesktopAcrylic} " +
                     $"controllerApplied={controllerApplied} legacyAccent={LegacyAccentBackdropActive} " +
+                    $"roundedMaterial={IsRoundedMaterialBackdropActive} " +
                     $"opacity={surfaceOpacity:F3} intensity={SettingsService.Settings.WidgetMaterialIntensity:F3}");
             }
 
@@ -164,6 +182,7 @@ public abstract partial class WidgetWindowBase
         {
             App.Log($"ApplyBackdropPreference fallback: {ex}");
             _lastAppliedBackdropSignature = null;
+            ClearRoundedMaterialBackdrop();
             ClearSolidColorBackdrop();
             DisposeAcrylicController();
             DisposeMicaController();
@@ -189,6 +208,47 @@ public abstract partial class WidgetWindowBase
         }
 
         ApplySurfaceStyle();
+    }
+
+    private bool ApplyRoundedMaterialBackdrop(
+        string materialType, bool isDark, double surfaceOpacity, double intensity)
+    {
+        if (!WidgetMaterialSystemBackdrop.IsSupported(materialType))
+        {
+            return false;
+        }
+
+        DetachAcrylicControllerTarget();
+        DetachMicaControllerTarget();
+        ClearSolidColorBackdrop();
+        _materialWindowBackdrop ??= new WinUIEx.TransparentTintBackdrop(Colors.Transparent);
+        if (!ReferenceEquals(SystemBackdrop, _materialWindowBackdrop))
+        {
+            SystemBackdrop = _materialWindowBackdrop;
+        }
+        var accent = App.Current.ThemeService?.GetEffectiveAccentColor()
+            ?? AccentColorHelper.DefaultAccentColor;
+        WidgetShellControl.ApplyMaterialSurface(new WidgetMaterialBackdropAppearance(
+            materialType, isDark, accent, surfaceOpacity, intensity));
+        IsRoundedMaterialBackdropActive = true;
+        ApplyLegacyWindowCornerRegion();
+        return true;
+    }
+
+    private void ClearRoundedMaterialBackdrop()
+    {
+        if (_materialWindowBackdrop is null)
+        {
+            return;
+        }
+        WidgetShellControl.ApplyMaterialSurface(null);
+        if (ReferenceEquals(SystemBackdrop, _materialWindowBackdrop))
+        {
+            SystemBackdrop = null;
+        }
+        _materialWindowBackdrop = null;
+        IsRoundedMaterialBackdropActive = false;
+        ApplyLegacyWindowCornerRegion();
     }
 
     private bool ApplyLegacyAccentBackdrop(Windows.UI.Color tintColor, double opacity)
@@ -273,6 +333,12 @@ public abstract partial class WidgetWindowBase
     {        if (_lastAppliedBackdropSignature != signature)
         {
             return false;
+        }
+
+        if (IsRoundedMaterialBackdropActive)
+        {
+            return _materialWindowBackdrop is not null &&
+                ReferenceEquals(SystemBackdrop, _materialWindowBackdrop);
         }
 
         return SettingsService.IsMicaMaterial(signature.MaterialType)
@@ -422,7 +488,7 @@ public abstract partial class WidgetWindowBase
         {
             SettingsService.WidgetMaterialTypeMica or SettingsService.WidgetMaterialTypeMicaAlt =>
                 AcrylicController is not null,
-            SettingsService.WidgetMaterialTypeAcrylic or SettingsService.WidgetMaterialTypeAcrylicBase =>
+            SettingsService.WidgetMaterialTypeGlass or SettingsService.WidgetMaterialTypeAcrylic or SettingsService.WidgetMaterialTypeAcrylicBase =>
                 MicaController is not null,
             _ => AcrylicController is not null || MicaController is not null
         };

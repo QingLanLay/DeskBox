@@ -9,16 +9,17 @@
 public static class WidgetMaterialKinds
 {
     public const string Acrylic = "Acrylic";
+    public const string Glass = "Glass";
     public const string AcrylicBase = "AcrylicBase";
     public const string Mica = "Mica";
     public const string MicaAlt = "MicaAlt";
     public const string Solid = "Solid";
 
     public static bool SupportsOpacity(string? materialType) =>
-        materialType is Acrylic or AcrylicBase or Solid;
+        materialType is Glass or Acrylic or AcrylicBase or Solid;
 
     public static bool SupportsMaterialIntensity(string? materialType) =>
-        materialType is Acrylic or AcrylicBase or Mica or MicaAlt;
+        materialType is Glass or Acrylic or AcrylicBase or Mica or MicaAlt;
 }
 
 /// <summary>Canonical widget border color modes and border styles.</summary>

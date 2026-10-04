@@ -60,9 +60,11 @@ public abstract partial class WidgetWindowBase : Window
     private double _lastLegacyAccentOpacity;
     private BackdropSignature? _lastAppliedBackdropSignature;
     private WinUIEx.TransparentTintBackdrop? _solidColorBackdrop;
+    private WinUIEx.TransparentTintBackdrop? _materialWindowBackdrop;
     protected SystemBackdropConfiguration? BackdropConfiguration;
     protected ICompositionSupportsSystemBackdrop? BackdropTarget;
     protected bool IsSolidColorBackdropActive { get; private set; }
+    protected bool IsRoundedMaterialBackdropActive { get; private set; }
 
     // ── Protected state: backdrop refresh ──────────────────────
     protected long BackdropRefreshGeneration;
@@ -320,6 +322,7 @@ public abstract partial class WidgetWindowBase : Window
         DisplayChangeWatcher?.Dispose();
         DisplayChangeWatcher = null;
         ClearSolidColorBackdrop();
+        ClearRoundedMaterialBackdrop();
         DisposeAcrylicController();
         DisposeMicaController();
         WidgetLayerService.ReleaseWindow(HWnd);

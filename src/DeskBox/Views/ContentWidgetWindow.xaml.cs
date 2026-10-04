@@ -631,7 +631,7 @@ public sealed partial class ContentWidgetWindow : WidgetWindowBase, IDesktopWidg
                 ContentWidgetShell.BackgroundSurface.Background,
                 surfaceColor);
         }
-        else if (WindowsCompatibilityService.UsesLegacyWindowAcrylic &&
+        else if (!IsRoundedMaterialBackdropActive && WindowsCompatibilityService.UsesLegacyWindowAcrylic &&
             SettingsService.IsAcrylicMaterial(materialType))
         {
             var overlayColor = WidgetMaterialVisualCalculator.BuildLegacyAcrylicSurfaceOverlayColor(

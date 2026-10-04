@@ -529,7 +529,6 @@ Text="DeskBox" />
 
                                 <toolkit:SettingsCard
                                     HorizontalContentAlignment="Right"
-                                    IsEnabled="{Binding NativeCornersSupported}"
                                     svc:Localized.DescriptionKey="Settings.Corner.Description"
                                     svc:Localized.HeaderKey="Settings.Corner.Title">
                                     <ComboBox

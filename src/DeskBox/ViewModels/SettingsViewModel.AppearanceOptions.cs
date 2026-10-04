@@ -156,6 +156,7 @@ public partial class SettingsViewModel
             ?
             [
                 SettingsService.WidgetMaterialTypeAcrylic,
+                SettingsService.WidgetMaterialTypeGlass,
                 SettingsService.WidgetMaterialTypeAcrylicBase,
                 SettingsService.WidgetMaterialTypeMica,
                 SettingsService.WidgetMaterialTypeMicaAlt,
@@ -164,6 +165,7 @@ public partial class SettingsViewModel
             :
             [
                 SettingsService.WidgetMaterialTypeAcrylic,
+                SettingsService.WidgetMaterialTypeGlass,
                 SettingsService.WidgetMaterialTypeAcrylicBase,
                 SettingsService.WidgetMaterialTypeSolid
             ];

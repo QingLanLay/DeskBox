@@ -1,4 +1,5 @@
 {
+  "Settings.Material.Glass": "玻璃",
   "Settings.AutoStart.Mode.Title": "启动方式",
   "Settings.AutoStart.Mode.Description": "标准方式可在 Windows“启动应用”中管理；计划任务尝试更早启动。",
   "Settings.AutoStart.Mode.Standard": "标准（推荐）",
@@ -2403,7 +2404,7 @@
   "Glance.Cache.Clear": "清除缓存",
   "Glance.Cache.Cleared": "缓存已清除",
   "Settings.Windows10VisualCompatibility.Title": "Windows 10 视觉兼容",
-  "Settings.Windows10VisualCompatibility.Message": "云母材质和系统窗口圆角仅适用于 Windows 11。Windows 10 将使用亚克力或纯色，并保持直角窗口。",
+  "Settings.Windows10VisualCompatibility.Message": "云母材质仅适用于 Windows 11。Windows 10 将使用亚克力或纯色，并支持格子圆角设置。",
   "Settings.Dialog.QuickAccessOperationFailedBody": "DeskBox 无法更新文件资源管理器中的快速访问，请稍后重试。",
   "DesktopOrganization.Result.FailedBody": "无法完成桌面整理，请稍后重试。",
   "DesktopOrganization.Undo.FailedBody": "无法撤销桌面整理，请稍后重试。",

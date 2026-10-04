@@ -24,6 +24,7 @@ namespace DeskBox.Views;
 public abstract partial class WidgetWindowBase
 {
     private bool _desktopPinnedInputActivationInProgress;
+    private readonly WindowCornerRegion _legacyCornerRegion = new();
 
     protected void ConfigureWindowCore()
     {
@@ -102,9 +103,13 @@ public abstract partial class WidgetWindowBase
             AttachXamlRootScaleWatcher();
             OnRootElementLoaded();
             SettleCompactBoundsAfterHostShown();
+            ApplyLegacyWindowCornerRegion();
             ApplyWidgetForegroundAppearance();
             ApplyBackdropPreference();
-            Win32Helper.ApplyFullWindowFrame(HWnd);
+            if (!IsRoundedMaterialBackdropActive)
+            {
+                Win32Helper.ApplyFullWindowFrame(HWnd);
+            }
             if (SupportsBackdropRefresh)
             {
                 QueueBackdropRefresh();
@@ -429,6 +434,7 @@ public abstract partial class WidgetWindowBase
 
         double previous = _observedRasterizationScale;
         _observedRasterizationScale = scale;
+        ApplyLegacyWindowCornerRegion();
         App.LogVerbose(
             $"[DisplayTopology] {LogPrefix} XamlRoot scale {previous:F3}->{scale:F3}");
         App.Current?.RequestDisplayTopologyRestore("xaml-root-scale");
@@ -488,6 +494,8 @@ public abstract partial class WidgetWindowBase
         {
             IsApplyingBounds = false;
         }
+
+        ApplyLegacyWindowCornerRegion();
 
         if (persist)
         {
@@ -616,6 +624,11 @@ public abstract partial class WidgetWindowBase
 
     protected void OnAppWindowChanged(AppWindow sender, AppWindowChangedEventArgs args)
     {
+        if (args.DidSizeChange || args.DidPositionChange)
+        {
+            ApplyLegacyWindowCornerRegion();
+        }
+
         if (args.DidVisibilityChange)
         {
             NotifyCompactHostVisibilityChanged(sender.IsVisible);
@@ -665,7 +678,23 @@ public abstract partial class WidgetWindowBase
             _ => Win32Helper.DWMWCP_ROUND
         };
 
-        Win32Helper.TrySetDwmWindowAttribute(HWnd, Win32Helper.DWMWA_WINDOW_CORNER_PREFERENCE, ref cornerPreference);
+        if (WindowsCompatibilityService.SupportsNativeWindowCorners)
+        {
+            Win32Helper.TrySetDwmWindowAttribute(HWnd, Win32Helper.DWMWA_WINDOW_CORNER_PREFERENCE, ref cornerPreference);
+        }
+        else
+        {
+            ApplyLegacyWindowCornerRegion();
+        }
+    }
+
+    private void ApplyLegacyWindowCornerRegion()
+    {
+        if (!WindowsCompatibilityService.SupportsNativeWindowCorners && !IsClosing)
+        {
+            _legacyCornerRegion.Apply(
+                HWnd, GetCornerRadiusFromPreference(), preserveAntialiasing: IsRoundedMaterialBackdropActive);
+        }
     }
 
     protected void ApplyDwmBorderStyle(bool isDark)

@@ -1,4 +1,5 @@
 {
+  "Settings.Material.Glass": "Glas",
   "Settings.AutoStart.Mode.Title": "Startmethode",
   "Settings.AutoStart.Mode.Description": "Standard wird über die Windows-Autostart-Apps verwaltet; eine geplante Aufgabe kann einen früheren Start versuchen.",
   "Settings.AutoStart.Mode.Standard": "Standard (empfohlen)",
@@ -2403,7 +2404,7 @@
   "Glance.Cache.Clear": "Cache leeren",
   "Glance.Cache.Cleared": "Cache geleert",
   "Settings.Windows10VisualCompatibility.Title": "Visuelle Kompatibilität mit Windows 10",
-  "Settings.Windows10VisualCompatibility.Message": "Mica und abgerundete Systemfenster erfordern Windows 11. Windows 10 verwendet Acrylic oder Vollfarbe mit eckigen Fenstern.",
+  "Settings.Windows10VisualCompatibility.Message": "Mica erfordert Windows 11. Windows 10 verwendet Acrylic oder Vollfarbe und unterstützt die Ecken-Einstellungen der Widgets.",
   "Settings.Dialog.QuickAccessOperationFailedBody": "DeskBox konnte den Schnellzugriff im Datei-Explorer nicht aktualisieren. Versuchen Sie es später erneut.",
   "DesktopOrganization.Result.FailedBody": "Die Desktoporganisation konnte nicht abgeschlossen werden. Versuchen Sie es später erneut.",
   "DesktopOrganization.Undo.FailedBody": "Die Desktoporganisation konnte nicht rückgängig gemacht werden. Versuchen Sie es später erneut.",

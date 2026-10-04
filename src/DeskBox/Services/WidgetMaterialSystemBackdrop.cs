@@ -75,6 +75,7 @@ internal sealed partial class WidgetMaterialSystemBackdrop : SystemBackdrop, IDi
         _configuration = GetDefaultSystemBackdropConfiguration(
             connectedTarget,
             xamlRoot);
+        _configuration.IsInputActive = true;
         ApplyController();
     }
 
@@ -86,6 +87,7 @@ internal sealed partial class WidgetMaterialSystemBackdrop : SystemBackdrop, IDi
         _configuration = GetDefaultSystemBackdropConfiguration(
             target,
             xamlRoot);
+        _configuration.IsInputActive = true;
         ApplyConfiguration();
     }
 
@@ -236,8 +238,10 @@ internal sealed partial class WidgetMaterialSystemBackdrop : SystemBackdrop, IDi
                 _appearance.AccentColor);
         _acrylicController.TintColor = tintColor;
         _acrylicController.FallbackColor = tintColor;
-        WidgetMaterialOpacityProfile profile =
-            WidgetMaterialVisualCalculator.CalculateAcrylic(
+        WidgetMaterialOpacityProfile profile = _appearance.MaterialType == SettingsService.WidgetMaterialTypeGlass
+            ? WidgetMaterialVisualCalculator.CalculateGlass(
+                _appearance.IsDark, _appearance.MaterialIntensity)
+            : WidgetMaterialVisualCalculator.CalculateAcrylic(
                 _appearance.IsDark,
                 useBase,
                 _appearance.SurfaceOpacity,

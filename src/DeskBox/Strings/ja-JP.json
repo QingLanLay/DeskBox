@@ -1,4 +1,5 @@
 {
+  "Settings.Material.Glass": "ガラス",
   "Settings.AutoStart.Mode.Title": "起動方法",
   "Settings.AutoStart.Mode.Description": "標準方式は Windows のスタートアップアプリで管理できます。スケジュールされたタスクは早めの起動を試みます。",
   "Settings.AutoStart.Mode.Standard": "標準（推奨）",
@@ -2403,7 +2404,7 @@
   "Glance.Cache.Clear": "キャッシュをクリア",
   "Glance.Cache.Cleared": "キャッシュをクリアしました",
   "Settings.Windows10VisualCompatibility.Title": "Windows 10 の表示互換性",
-  "Settings.Windows10VisualCompatibility.Message": "Mica とシステムのウィンドウ角丸には Windows 11 が必要です。Windows 10 ではアクリルまたは単色と直角のウィンドウを使用します。",
+  "Settings.Windows10VisualCompatibility.Message": "Mica には Windows 11 が必要です。Windows 10 ではアクリルまたは単色を使用し、ウィジェットの角丸設定に対応します。",
   "Settings.Dialog.QuickAccessOperationFailedBody": "DeskBox はエクスプローラーのクイック アクセスを更新できませんでした。後でもう一度お試しください。",
   "DesktopOrganization.Result.FailedBody": "デスクトップの整理を完了できませんでした。後でもう一度お試しください。",
   "DesktopOrganization.Undo.FailedBody": "デスクトップの整理を元に戻せませんでした。後でもう一度お試しください。",

@@ -1,4 +1,5 @@
 {
+  "Settings.Material.Glass": "কাচ",
   "Settings.AutoStart.Mode.Title": "স্টার্টআপ পদ্ধতি",
   "Settings.AutoStart.Mode.Description": "স্ট্যান্ডার্ড পদ্ধতি Windows-এর স্টার্টআপ অ্যাপে পরিচালিত হয়; নির্ধারিত কাজ আগে চালু হওয়ার চেষ্টা করতে পারে।",
   "Settings.AutoStart.Mode.Standard": "স্ট্যান্ডার্ড (প্রস্তাবিত)",
@@ -2403,7 +2404,7 @@
   "Glance.Cache.Clear": "ক্যাশ মুছুন",
   "Glance.Cache.Cleared": "ক্যাশ মুছে ফেলা হয়েছে",
   "Settings.Windows10VisualCompatibility.Title": "Windows 10 ভিজ্যুয়াল সামঞ্জস্য",
-  "Settings.Windows10VisualCompatibility.Message": "Mica এবং সিস্টেম উইন্ডোর গোলাকার কোণের জন্য Windows 11 প্রয়োজন। Windows 10-এ বর্গাকার কোণসহ অ্যাক্রিলিক বা সলিড উপাদান ব্যবহার করা হয়।",
+  "Settings.Windows10VisualCompatibility.Message": "Mica-এর জন্য Windows 11 প্রয়োজন। Windows 10 অ্যাক্রিলিক বা সলিড উপাদান ব্যবহার করে এবং উইজেটের কোণের সেটিং সমর্থন করে।",
   "Settings.Dialog.QuickAccessOperationFailedBody": "DeskBox ফাইল এক্সপ্লোরারের দ্রুত অ্যাক্সেস আপডেট করতে পারেনি। পরে আবার চেষ্টা করুন।",
   "DesktopOrganization.Result.FailedBody": "ডেস্কটপ সংগঠন সম্পন্ন করা যায়নি। পরে আবার চেষ্টা করুন।",
   "DesktopOrganization.Undo.FailedBody": "ডেস্কটপ সংগঠনের কাজ পূর্বাবস্থায় ফেরানো যায়নি। পরে আবার চেষ্টা করুন।",
