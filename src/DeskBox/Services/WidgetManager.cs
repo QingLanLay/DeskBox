@@ -761,15 +761,20 @@ public sealed partial class WidgetManager
         RefreshVisibleWidgetDesktopLayers("layer-mode-changed");
     }
 
-    public void RefreshVisibleWidgetDesktopLayers(string reason)
+    public void RefreshVisibleWidgetDesktopLayers(string reason, bool recoverNativeVisibility = false)
     {
         if (!HasUiThreadAccess())
         {
-            App.UiDispatcherQueue.TryEnqueue(() => RefreshVisibleWidgetDesktopLayers(reason));
+            App.UiDispatcherQueue.TryEnqueue(() => RefreshVisibleWidgetDesktopLayers(reason, recoverNativeVisibility));
             return;
         }
 
         App.Log($"[WidgetManager] Refresh visible widget desktop layers reason={reason}");
+        if (WidgetLayerService.IsSessionRecoverySuspended)
+        {
+            return;
+        }
+
         if (WidgetLayerService.UsesQuickRevealMode())
         {
             _ = SetAllWidgetsVisibleAsync(false);
@@ -786,7 +791,20 @@ public sealed partial class WidgetManager
 
             try
             {
+                // Minimizing the Explorer owner hides its owned HWNDs without
+                // changing DeskBox's logical visibility. Detaching that owner
+                // before restoring Explorer leaves those HWNDs hidden, so a
+                // verified shell recovery must explicitly show only the
+                // widgets the user still intends to be visible.
+                if (recoverNativeVisibility && !Win32Helper.IsWindowVisible(window.WindowHandle))
+                {
+                    Win32Helper.ShowWindowAsync(window.WindowHandle, Win32Helper.SW_SHOWNOACTIVATE);
+                }
                 window.ForceRestoreDesktopLayerFromManager();
+                if (recoverNativeVisibility && WidgetLayerService.UsesDesktopPinnedMode())
+                {
+                    WidgetLayerService.MoveToDesktopBottom(window.WindowHandle, showWindow: true);
+                }
             }
             catch (Exception ex)
             {
@@ -795,6 +813,17 @@ public sealed partial class WidgetManager
         }
 
         QueueIdleWidgetZOrderNormalization(reason);
+    }
+
+    internal bool AreVisibleDesktopWindowsRecovered()
+    {
+        IntPtr expectedOwner = WidgetLayerService.UsesDesktopPinnedMode()
+            ? DesktopShellWindowRecovery.GetValidatedOwner(WidgetLayerService.FindDesktopIconView())
+            : IntPtr.Zero;
+        return GetLoadedDesktopWindows().Where(window => window.Visible).All(window =>
+            Win32Helper.IsWindowVisible(window.WindowHandle) &&
+            (!WidgetLayerService.UsesDesktopPinnedMode() || expectedOwner != IntPtr.Zero &&
+                Win32Helper.GetWindowLongPtr(window.WindowHandle, Win32Helper.GWLP_HWNDPARENT) == expectedOwner));
     }
 
     private void ApplyAppearancePreview()
@@ -1391,7 +1420,7 @@ public sealed partial class WidgetManager
             !visible &&
             _widgetsRaisedFromTray &&
             WidgetLayerService.UsesQuickRevealMode();
-        App.LogVerbose(
+        App.Log(
             $"[TrayBatch] SetAllVisible requested visible={visible} raised={_widgetsRaisedFromTray} " +
             $"loadedFile={_fileWidgets.Count} loadedContent={_contentWidgets.Count}");
         CancelActiveTrayAnimationsAndRestorePositions();
@@ -1528,11 +1557,24 @@ public sealed partial class WidgetManager
             $"[WidgetManager] Restoring widget positions for current display topology " +
             $"generation={generation} reasons={reasons}");
 
-        if (_sessionManager.IsInteractionActive)
+        if (WidgetLayerService.IsSessionRecoverySuspended || _sessionManager.IsInteractionActive)
         {
             App.LogVerbose(
                 $"[WidgetManager] Deferring topology generation={generation}; widget interaction is active");
             return false;
+        }
+
+        bool requiresStableHost = DesktopLayerRecoveryPolicy.RequiresStableHost(reasons);
+        long hostGeneration = WidgetLayerService.DesktopHostGeneration;
+        if (requiresStableHost)
+        {
+            if (!await WidgetLayerService.WaitForDesktopIconViewReadyAsync() ||
+                WidgetLayerService.IsSessionRecoverySuspended ||
+                hostGeneration != WidgetLayerService.DesktopHostGeneration ||
+                _sessionManager.IsInteractionActive)
+            {
+                return false;
+            }
         }
 
         bool allRestored = true;
@@ -1547,6 +1589,13 @@ public sealed partial class WidgetManager
             if (_topologyLayoutService.ActivateCurrentTopology(_settingsService.Settings))
             {
                 _settingsService.SaveDebounced(notifySubscribers: false);
+            }
+
+            if (requiresStableHost)
+            {
+                // Lock/display transitions can interrupt an animation before
+                // its completion restores opacity, cloak and input routing.
+                CancelActiveTrayAnimationsAndRestorePositions();
             }
 
             foreach (IDesktopWidgetWindow window in windows)
@@ -1571,6 +1620,39 @@ public sealed partial class WidgetManager
         }
 
         await Task.Yield();
+        if (WidgetLayerService.IsSessionRecoverySuspended ||
+            requiresStableHost && hostGeneration != WidgetLayerService.DesktopHostGeneration ||
+            _sessionManager.IsInteractionActive)
+        {
+            return false;
+        }
+
+        if (requiresStableHost && !_widgetsRaisedFromTray && !WidgetLayerService.IsSessionRecoverySuspended)
+        {
+            RefreshVisibleWidgetDesktopLayers("lifecycle-desktop-host-ready");
+        }
+
+        if (requiresStableHost)
+        {
+            foreach (IDesktopWidgetWindow window in windows)
+            {
+                if (window is ContentWidgetWindow contentWindow)
+                {
+                    contentWindow.RecoverNativeFileDropBridge();
+                }
+
+                if (window.Visible)
+                {
+                    // Reconcile native visibility without changing the user's
+                    // persisted visibility or activating the window.
+                    allRestored &= Win32Helper.SetWindowPos(window.WindowHandle,
+                        IntPtr.Zero, 0, 0, 0, 0, Win32Helper.WindowLayerPositionFlags |
+                            Win32Helper.SWP_NOZORDER | Win32Helper.SWP_SHOWWINDOW);
+                    window.RestoreBackdropAfterInteraction();
+                }
+            }
+        }
+
         QueueIdleWidgetZOrderNormalization("display-topology-restored");
         PlacePendingInitialWidgets();
         return allRestored;

@@ -1,4 +1,5 @@
 using DeskBox.Helpers;
+using DeskBox.Services;
 using System.Drawing;
 using System.Reflection;
 
@@ -414,6 +415,59 @@ public class IconHelperTests
             Assert.True(
                 HasVisiblePixels(bitmap),
                 "A standalone .ico icon location must decode into visible pixels.");
+        }
+        finally
+        {
+            Directory.Delete(temporaryDirectory, recursive: true);
+        }
+    }
+
+    [Theory]
+    [InlineData("ProductIcon")]
+    [InlineData("ProductIcon.ico")]
+    public void InstallerShortcutIcon_UsesResourceArtworkAndTracksResourceChanges(
+        string resourceName)
+    {
+        string temporaryDirectory = Path.Combine(
+            Path.GetTempPath(),
+            $"DeskBox-installer-icon-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(temporaryDirectory);
+        try
+        {
+            string iconPath = Path.Combine(temporaryDirectory, resourceName);
+            string shortcutPath = Path.Combine(temporaryDirectory, "Installer App.lnk");
+            File.WriteAllBytes(iconPath, CreateOpaqueIconFileBytes());
+            DragDropPermissionService.CreateOrUpdateShortcut(
+                shortcutPath,
+                temporaryDirectory,
+                string.Empty,
+                iconPath);
+
+            MethodInfo resolveMethod = typeof(IconHelper).GetMethod(
+                "ResolveIconSource",
+                BindingFlags.NonPublic | BindingFlags.Static)!;
+            object iconSource = resolveMethod.Invoke(null, [shortcutPath, true])!;
+            Assert.Equal(iconPath, iconSource.GetType().GetProperty("Path")!.GetValue(iconSource));
+            Assert.Equal(true, iconSource.GetType().GetProperty("UsesExplicitIconIndex")!.GetValue(iconSource));
+
+            byte[] iconBytes = Assert.IsType<byte[]>(InvokeIconBytesMethod("LoadIconBytes", iconSource));
+            using var stream = new MemoryStream(iconBytes);
+            using var bitmap = new Bitmap(stream);
+            Color center = bitmap.GetPixel(bitmap.Width / 2, bitmap.Height / 2);
+            // Native resampling can round channel values by one or two units.
+            Assert.InRange(center.A, 250, 255);
+            Assert.InRange(center.R, 224, 228);
+            Assert.InRange(center.G, 214, 218);
+            Assert.InRange(center.B, 126, 130);
+
+            MethodInfo cacheKeyMethod = typeof(IconHelper).GetMethod(
+                "BuildCacheKey",
+                BindingFlags.NonPublic | BindingFlags.Static)!;
+            string originalKey = (string)cacheKeyMethod.Invoke(null, [shortcutPath, iconSource])!;
+            DateTime originalWriteTime = File.GetLastWriteTimeUtc(iconPath);
+            File.SetLastWriteTimeUtc(iconPath, originalWriteTime.AddMinutes(1));
+            string updatedKey = (string)cacheKeyMethod.Invoke(null, [shortcutPath, iconSource])!;
+            Assert.NotEqual(originalKey, updatedKey);
         }
         finally
         {

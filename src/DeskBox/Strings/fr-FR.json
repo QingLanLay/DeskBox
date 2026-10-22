@@ -1,4 +1,5 @@
 {
+  "Settings.Material.Glass": "Verre",
   "Settings.AutoStart.Mode.Title": "Méthode de démarrage",
   "Settings.AutoStart.Mode.Description": "Le mode standard se gère dans les applications de démarrage Windows ; une tâche planifiée peut tenter un démarrage plus tôt.",
   "Settings.AutoStart.Mode.Standard": "Standard (recommandé)",
@@ -2403,7 +2404,7 @@
   "Glance.Cache.Clear": "Vider le cache",
   "Glance.Cache.Cleared": "Cache vidé",
   "Settings.Windows10VisualCompatibility.Title": "Compatibilité visuelle avec Windows 10",
-  "Settings.Windows10VisualCompatibility.Message": "Mica et les coins de fenêtre système nécessitent Windows 11. Windows 10 utilise l’acrylique ou une couleur unie avec des fenêtres carrées.",
+  "Settings.Windows10VisualCompatibility.Message": "Mica nécessite Windows 11. Windows 10 utilise l’acrylique ou une couleur unie et prend en charge les réglages des coins des widgets.",
   "Settings.Dialog.QuickAccessOperationFailedBody": "DeskBox n’a pas pu mettre à jour l’accès rapide de l’Explorateur de fichiers. Réessayez plus tard.",
   "DesktopOrganization.Result.FailedBody": "L’organisation du bureau n’a pas pu être terminée. Réessayez plus tard.",
   "DesktopOrganization.Undo.FailedBody": "L’organisation du bureau n’a pas pu être annulée. Réessayez plus tard.",

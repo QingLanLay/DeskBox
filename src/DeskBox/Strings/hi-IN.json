@@ -1,4 +1,5 @@
 {
+  "Settings.Material.Glass": "काँच",
   "Settings.AutoStart.Mode.Title": "स्टार्टअप का तरीका",
   "Settings.AutoStart.Mode.Description": "मानक तरीका Windows के स्टार्टअप ऐप्स में प्रबंधित होता है; शेड्यूल किया गया कार्य पहले शुरू होने का प्रयास कर सकता है।",
   "Settings.AutoStart.Mode.Standard": "मानक (अनुशंसित)",
@@ -2403,7 +2404,7 @@
   "Glance.Cache.Clear": "कैश साफ़ करें",
   "Glance.Cache.Cleared": "कैश साफ़ हो गया",
   "Settings.Windows10VisualCompatibility.Title": "Windows 10 दृश्य संगतता",
-  "Settings.Windows10VisualCompatibility.Message": "Mica और सिस्टम विंडो के गोल कोनों के लिए Windows 11 आवश्यक है। Windows 10 में चौकोर कोनों के साथ ऐक्रेलिक या ठोस सामग्री का उपयोग होता है।",
+  "Settings.Windows10VisualCompatibility.Message": "Mica के लिए Windows 11 आवश्यक है। Windows 10 में ऐक्रेलिक या ठोस सामग्री का उपयोग होता है और विजेट के कोनों की सेटिंग समर्थित है।",
   "Settings.Dialog.QuickAccessOperationFailedBody": "DeskBox फ़ाइल एक्सप्लोरर के क्विक एक्सेस को अपडेट नहीं कर सका। कृपया बाद में फिर कोशिश करें।",
   "DesktopOrganization.Result.FailedBody": "डेस्कटॉप व्यवस्थित करना पूरा नहीं हो सका। कृपया बाद में फिर कोशिश करें।",
   "DesktopOrganization.Undo.FailedBody": "डेस्कटॉप व्यवस्थित करने की कार्रवाई पूर्ववत नहीं की जा सकी। कृपया बाद में फिर कोशिश करें।",

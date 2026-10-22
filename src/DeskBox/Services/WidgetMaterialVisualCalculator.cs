@@ -14,6 +14,15 @@ internal readonly record struct WidgetMaterialGradientProfile(
 /// </summary>
 internal static class WidgetMaterialVisualCalculator
 {
+    public static WidgetMaterialOpacityProfile CalculateGlass(
+        bool isDark, double materialIntensity)
+    {
+        double intensity = NormalizeMaterialIntensity(materialIntensity);
+        return new WidgetMaterialOpacityProfile(
+            Lerp(isDark ? 0.035 : 0.025, isDark ? 0.28 : 0.22, intensity),
+            Lerp(isDark ? 0.06 : 0.08, isDark ? 0.30 : 0.34, intensity));
+    }
+
     public static WidgetMaterialOpacityProfile CalculateAcrylic(
         bool isDark,
         bool useBase,

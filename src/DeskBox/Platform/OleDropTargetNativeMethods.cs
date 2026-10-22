@@ -19,6 +19,9 @@ internal static partial class OleDropTargetNativeMethods
     [DllImport("user32.dll", CharSet = CharSet.Unicode)]
     internal static extern uint RegisterClipboardFormatW(string lpszFormat);
 
+    [DllImport("user32.dll", CharSet = CharSet.Unicode)]
+    internal static extern IntPtr GetPropW(IntPtr hwnd, string name);
+
     [DllImport("ole32.dll")]
     internal static extern void ReleaseStgMedium(ref NativeStorageMedium medium);
 

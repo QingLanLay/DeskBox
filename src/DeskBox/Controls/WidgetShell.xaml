@@ -39,6 +39,13 @@
             <RowDefinition Height="*" />
         </Grid.RowDefinitions>
 
+        <SystemBackdropElement
+            x:Name="MaterialPlate"
+            Grid.RowSpan="2"
+            CornerRadius="8"
+            IsHitTestVisible="False"
+            Visibility="Collapsed" />
+
         <Border
             x:Name="BackgroundPlate"
             Grid.RowSpan="2"
@@ -63,6 +70,29 @@
                     Background="Black"
                     Visibility="Collapsed" />
             </Grid>
+        </Border>
+
+        <Border
+            x:Name="GlassReflection"
+            Grid.RowSpan="2"
+            BorderThickness="0.8"
+            CornerRadius="8"
+            IsHitTestVisible="False"
+            Visibility="Collapsed">
+            <Border.Background>
+                <LinearGradientBrush StartPoint="0,0" EndPoint="0.6,1">
+                    <GradientStop Color="#18FFFFFF" Offset="0" />
+                    <GradientStop Color="#02FFFFFF" Offset="0.45" />
+                    <GradientStop Color="#08FFFFFF" Offset="1" />
+                </LinearGradientBrush>
+            </Border.Background>
+            <Border.BorderBrush>
+                <LinearGradientBrush StartPoint="0,0" EndPoint="0.8,1">
+                    <GradientStop Color="#60FFFFFF" Offset="0" />
+                    <GradientStop Color="#12FFFFFF" Offset="0.55" />
+                    <GradientStop Color="#28FFFFFF" Offset="1" />
+                </LinearGradientBrush>
+            </Border.BorderBrush>
         </Border>
 
         <Grid

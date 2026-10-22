@@ -164,6 +164,7 @@ public sealed partial class AppearanceSettingsViewModel : ObservableObject
     // Shell-pushed host state.
     private string[] _supportedMaterialKinds =
     [
+        WidgetMaterialKinds.Glass,
         WidgetMaterialKinds.Acrylic,
         WidgetMaterialKinds.AcrylicBase,
         WidgetMaterialKinds.Solid
@@ -957,9 +958,9 @@ public sealed partial class AppearanceSettingsViewModel : ObservableObject
         {
             string[] keys =
             [
-                "Settings.Corner.Square",
+                "Settings.Corner.Round",
                 "Settings.Corner.Small",
-                "Settings.Corner.Round"
+                "Settings.Corner.Square"
             ];
             _cachedCornerPreferenceNames ??= keys.Select(key => _localize(key)).ToArray();
             var options = new SettingsOption[CornerPreferences.Length];
@@ -1838,6 +1839,7 @@ public sealed partial class AppearanceSettingsViewModel : ObservableObject
     {
         return material switch
         {
+            WidgetMaterialKinds.Glass => _localize("Settings.Material.Glass"),
             WidgetMaterialKinds.Mica => _localize("Settings.Material.Mica"),
             WidgetMaterialKinds.MicaAlt => _localize("Settings.Material.MicaAlt"),
             WidgetMaterialKinds.AcrylicBase => _localize("Settings.Material.AcrylicBase"),

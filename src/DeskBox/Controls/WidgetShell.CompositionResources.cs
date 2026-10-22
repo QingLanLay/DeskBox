@@ -14,6 +14,7 @@ public sealed partial class WidgetShell
         try
         {
             SuspendVisualActivity();
+            ReleaseMaterialSurface();
             StopCompactCompositionTransitionAnimations(force: true);
             StopGroupDropPreviewBreathing();
         }

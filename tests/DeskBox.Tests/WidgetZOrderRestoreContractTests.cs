@@ -79,6 +79,7 @@ public sealed class WidgetZOrderRestoreContractTests
 
         Assert.Contains("SetWindowSubclass", setup, StringComparison.Ordinal);
         Assert.Contains("Win32Helper.WM_MOUSEACTIVATE", callback, StringComparison.Ordinal);
+        Assert.Contains("Win32Helper.WM_POINTERACTIVATE", callback, StringComparison.Ordinal);
         Assert.Contains("WidgetLayerService.ShouldSuppressPointerActivation", callback, StringComparison.Ordinal);
         Assert.Contains("Win32Helper.MA_NOACTIVATE", callback, StringComparison.Ordinal);
         Assert.Contains("RestoreDesktopPinnedBottomState", callback, StringComparison.Ordinal);
@@ -106,6 +107,21 @@ public sealed class WidgetZOrderRestoreContractTests
         Assert.Contains("RestoreDesktopPinnedBottomState", routedHandler, StringComparison.Ordinal);
         Assert.Contains("ActivateDesktopPinnedWindow", routedHandler, StringComparison.Ordinal);
         Assert.DoesNotContain("args.Handled = true", routedHandler, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void DesktopPinnedPointerFocus_IsCancelledBeforeTheNativeIslandCanActivate()
+    {
+        string bounds = File.ReadAllText(TestPaths.FromRepository(
+            "src/DeskBox/Views/WidgetWindowBase.Bounds.cs"));
+        string focus = SliceMethod(bounds,
+            "private void RootElement_GettingFocusForDesktopPinnedLayer",
+            "private void RootElement_PointerPressedForDesktopPinnedLayer");
+        Assert.Contains("UIElement.GettingFocusEvent", bounds, StringComparison.Ordinal);
+        Assert.Contains("ShouldSuppressFocus", focus, StringComparison.Ordinal);
+        Assert.Contains("args.NewFocusedElement", focus, StringComparison.Ordinal);
+        Assert.Contains("args.TryCancel()", focus, StringComparison.Ordinal);
+        Assert.DoesNotContain("RestoreDesktopPinnedBottomState", focus, StringComparison.Ordinal);
     }
 
     [Fact]
@@ -143,6 +159,8 @@ public sealed class WidgetZOrderRestoreContractTests
         Assert.Contains("RichEditBox", keyboardTarget, StringComparison.Ordinal);
         Assert.Contains("PasswordBox", keyboardTarget, StringComparison.Ordinal);
         Assert.Contains("SetWindowNoActivate(windowHandle, enabled: false)", prepare, StringComparison.Ordinal);
+        Assert.Contains("DetachFromDesktopIconLayerIfNeeded", prepare, StringComparison.Ordinal);
+        Assert.Contains("RestoreAfterDesktopPinnedKeyboardInput", activate, StringComparison.Ordinal);
         Assert.Contains("base.Activate()", activate, StringComparison.Ordinal);
         Assert.Contains("SetForegroundWindow(HWnd)", activate, StringComparison.Ordinal);
         Assert.Contains("RestoreDesktopPinnedBottomState(reason)", activate, StringComparison.Ordinal);
@@ -235,6 +253,8 @@ public sealed class WidgetZOrderRestoreContractTests
         Assert.Contains("IsHideAnimationRunning,", restore, StringComparison.Ordinal);
         Assert.Contains("IsClosing", restore, StringComparison.Ordinal);
         Assert.Contains("CancelPendingDesktopLayerRestore();", restore, StringComparison.Ordinal);
+        Assert.Contains("WidgetLayerService.IsRestingAtDesktopLayer(HWnd)", restore, StringComparison.Ordinal);
+        Assert.Contains("if (needsLayerRepair)", restore, StringComparison.Ordinal);
         Assert.DoesNotContain(
             "WidgetLayerService.MoveToDesktopBottom(HWnd);",
             restore,
@@ -262,14 +282,15 @@ public sealed class WidgetZOrderRestoreContractTests
         Assert.Contains("MoveToDesktopBottom(windowHandle)", pinnedBring, StringComparison.Ordinal);
         Assert.DoesNotContain("HWND_TOP", pinnedBring, StringComparison.Ordinal);
 
-        // The capsule expand raise must stay inside the desktop band while
-        // taking the top of it: attach without bottom placement, then HWND_TOP.
+        // Desktop ownership does not constrain a top-level HWND's Z-order.
+        // Expand above peers while staying behind every visible application.
         Assert.DoesNotContain(
             "UsesDesktopPinnedMode()",
             tryBring,
             StringComparison.Ordinal);
         Assert.Contains("placeAtBottom: false", tryBring, StringComparison.Ordinal);
-        Assert.Contains("HWND_TOP", tryBring, StringComparison.Ordinal);
+        Assert.Contains("TryBringDesktopPeerBehindApplications", tryBring, StringComparison.Ordinal);
+        Assert.DoesNotContain("Win32Helper.HWND_TOP,", tryBring, StringComparison.Ordinal);
         Assert.DoesNotContain("MoveToDesktopBottom", tryBring, StringComparison.Ordinal);
     }
 

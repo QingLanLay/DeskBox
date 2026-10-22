@@ -62,7 +62,7 @@ public sealed partial class ContentWidgetWindow
         InstallNativeFileDropBridge(registerDropTarget: false);
     }
 
-    private void InstallNativeFileDropBridge(bool registerDropTarget = true)
+    private void InstallNativeFileDropBridge(bool registerDropTarget = true, bool force = false)
     {
         _nativeFileDropSubclassProc ??= NativeFileDropSubclassProc;
         if (!_isNativeFileDropSubclassInstalled)
@@ -88,7 +88,7 @@ public sealed partial class ContentWidgetWindow
                     targetWindow,
                     out NativeDropTarget? existingTarget))
             {
-                existingTarget.Register();
+                existingTarget.Register(force);
                 continue;
             }
 
@@ -148,12 +148,41 @@ public sealed partial class ContentWidgetWindow
         return handles;
     }
 
+    internal void RecoverNativeFileDropBridge()
+    {
+        if (IsClosing)
+        {
+            return;
+        }
+
+        ReleaseNativeFileDropRegistrationTimer();
+        StopGroupFileDropTracking(disposeCachedBatch: true);
+        NativeFileDropTarget_DragLeaveEvent();
+        HashSet<IntPtr> currentHandles = GetNativeFileDropWindowHandles().ToHashSet();
+        foreach (IntPtr stale in _nativeFileDropTargets.Keys.Where(handle => !currentHandles.Contains(handle)).ToArray())
+        {
+            _nativeFileDropTargets[stale].Dispose();
+            _nativeFileDropTargets.Remove(stale);
+        }
+
+        Win32Helper.AllowShellDragDropMessages(HWnd);
+        InstallNativeFileDropBridge(force: true);
+        QueueNativeFileDropTargetRegistration();
+        if (Visible)
+        {
+            QueueVisibleContentResume();
+            NotifyVisibleContentRevealCompleted();
+        }
+        App.Log($"[DropTarget] Recovered content drop bridge id={_config.Id} windows={currentHandles.Count}");
+    }
+
     private bool HasRegisteredContentBridgeDropTarget()
     {
+        var currentHandles = GetNativeFileDropWindowHandles();
         foreach ((IntPtr window, NativeDropTarget target) in
                  _nativeFileDropTargets)
         {
-            if (window != HWnd && target.IsRegistered)
+            if (window != HWnd && currentHandles.Contains(window) && target.IsRegistered)
             {
                 return true;
             }

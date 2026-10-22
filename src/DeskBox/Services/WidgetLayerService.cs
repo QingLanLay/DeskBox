@@ -19,6 +19,37 @@ public static class WidgetLayerService
     private static readonly Dictionary<IntPtr, DesktopLayerAttachment> s_desktopLayerAttachments = [];
     private static IntPtr s_cachedDesktopIconView;
     private static bool s_startupDesktopLayerAttachmentDeferred;
+    private static bool s_sessionRecoverySuspended;
+    private static long s_desktopHostGeneration;
+
+    internal static bool IsSessionRecoverySuspended => Volatile.Read(ref s_sessionRecoverySuspended);
+    internal static long DesktopHostGeneration => Interlocked.Read(ref s_desktopHostGeneration);
+
+    internal static void SetSessionRecoverySuspended(bool suspended)
+    {
+        Volatile.Write(ref s_sessionRecoverySuspended, suspended);
+        InvalidateDesktopIconViewCache();
+    }
+
+    internal static void DetachDesktopOwnersForRecovery()
+    {
+        lock (s_desktopLayerLock)
+        {
+            var attachments = s_desktopLayerAttachments.ToArray();
+            s_desktopLayerAttachments.Clear();
+            s_cachedDesktopIconView = IntPtr.Zero;
+            foreach (var (window, attachment) in attachments)
+            {
+                if (Win32Helper.IsWindow(window))
+                {
+                    // Do not reposition/show any window during the secure
+                    // desktop transition. Only remove our owner association.
+                    Win32Helper.SetWindowLongPtr(window, Win32Helper.GWLP_HWNDPARENT,
+                        Win32Helper.IsWindow(attachment.OriginalOwner) ? attachment.OriginalOwner : IntPtr.Zero);
+                }
+            }
+        }
+    }
 
     internal static void BeginStartupDesktopLayerAttachmentDeferral()
     {
@@ -45,7 +76,14 @@ public static class WidgetLayerService
 
         for (int attempt = 1; attempt <= StartupDesktopReadyMaxProbeAttempts; attempt++)
         {
-            IntPtr desktopIconView = FindDesktopIconView();
+            cancellationToken.ThrowIfCancellationRequested();
+            if (IsSessionRecoverySuspended)
+            {
+                return false;
+            }
+
+            IntPtr desktopIconView = Win32Helper.IsInteractiveDesktopAvailable()
+                ? FindDesktopIconView() : IntPtr.Zero;
             if (stabilityTracker.Observe(desktopIconView))
             {
                 App.Log(
@@ -73,6 +111,11 @@ public static class WidgetLayerService
         IntPtr windowHandle,
         bool showWindow = true)
     {
+        if (IsSessionRecoverySuspended)
+        {
+            return;
+        }
+
         ApplyDesktopPinnedActivationStyle(windowHandle);
 
         // Desktop-pinned mode always rests inside Explorer. Dynamic mode uses
@@ -86,12 +129,23 @@ public static class WidgetLayerService
         }
 
         DetachFromDesktopIconLayerIfNeeded(windowHandle);
-        Win32Helper.ClearWindowTopMost(windowHandle);
-        Win32Helper.SetWindowToBottom(windowHandle);
+        if (UsesDesktopPinnedMode())
+        {
+            _ = TryBringDesktopPeerBehindApplications(windowHandle, IsDesktopWidgetWindow, showWindow);
+        }
+        else
+        {
+            Win32Helper.SetWindowToBottom(windowHandle);
+        }
     }
 
     public static IntPtr ClearTopMostPreservingForeground(IntPtr windowHandle)
     {
+        if (IsSessionRecoverySuspended)
+        {
+            return Win32Helper.GetForegroundWindow();
+        }
+
         ApplyDesktopPinnedActivationStyle(windowHandle);
 
         if (UsesDesktopPinnedMode())
@@ -125,8 +179,8 @@ public static class WidgetLayerService
                 if (!TryAttachRestingWindowWithoutChangingLevel(windowHandle))
                 {
                     DetachFromDesktopIconLayerIfNeeded(windowHandle);
-                    Win32Helper.ClearWindowTopMost(windowHandle);
                 }
+                Win32Helper.ClearWindowTopMost(windowHandle);
                 break;
 
             case RelativeLayerRestoreDisposition.BehindForeground:
@@ -389,28 +443,172 @@ public static class WidgetLayerService
     /// </summary>
     public static bool TryBringAbovePeerWidgetsAtDesktopLayer(IntPtr windowHandle)
     {
-        // Desktop-pinned widgets are owner-attached to Explorer's desktop icon
-        // layer, so HWND_TOP lifts them above sibling widgets only; the band
-        // itself stays beneath every application window and Win+D.
+        // Explorer ownership protects the widget from Win+D, but HWND_TOP
+        // still raises an owned top-level window above ordinary applications.
+        // Keep the peer raise below every visible application window.
         if (!ShouldAttachRestingWindowToDesktop() ||
             !TryAttachToDesktopIconLayer(windowHandle, placeAtBottom: false))
         {
             return false;
         }
 
+        return TryBringDesktopPeerBehindApplications(windowHandle, IsDesktopWidgetWindow);
+    }
+
+    internal static bool TryBringDesktopPeerBehindApplications(
+        IntPtr windowHandle,
+        Func<IntPtr, bool> isWidgetWindow,
+        bool showWindow = true)
+    {
+        uint flags = Win32Helper.WindowLayerPositionFlags;
+        if (showWindow)
+        {
+            flags |= Win32Helper.SWP_SHOWWINDOW;
+        }
+
         return Win32Helper.SetWindowPos(
             windowHandle,
-            Win32Helper.HWND_TOP,
+            FindDesktopPeerRaiseBoundary(windowHandle, isWidgetWindow),
             0,
             0,
             0,
             0,
-            Win32Helper.SWP_NOMOVE |
-                Win32Helper.SWP_NOSIZE |
-                Win32Helper.SWP_NOACTIVATE |
-                Win32Helper.SWP_NOOWNERZORDER |
-                Win32Helper.SWP_SHOWWINDOW);
+            flags);
     }
+
+    private static IntPtr FindDesktopPeerRaiseBoundary(
+        IntPtr windowHandle,
+        Func<IntPtr, bool> isWidgetWindow)
+    {
+        IntPtr boundary = Win32Helper.IsWindowTopMost(windowHandle)
+            ? Win32Helper.HWND_NOTOPMOST
+            : Win32Helper.HWND_TOP;
+        IntPtr current = Win32Helper.GetWindow(windowHandle, Win32Helper.GW_HWNDFIRST);
+        while (current != IntPtr.Zero)
+        {
+            // Windows can leave minimized and cloaked HWNDs behind the desktop.
+            // Never use that lower region, or the taskbar's changing Z-order
+            // band, as an application boundary for a desktop widget.
+            if (IsDesktopShellHost(current) && IsRenderedWindow(current))
+            {
+                break;
+            }
+
+            if (current != windowHandle &&
+                IsRenderedWindow(current) &&
+                !Win32Helper.IsWindowTopMost(current) &&
+                !isWidgetWindow(current) &&
+                !HasWindowClass(current, "Shell_TrayWnd") &&
+                !HasWindowClass(current, "Shell_SecondaryTrayWnd") &&
+                !IsDesktopShellWindow(current))
+            {
+                boundary = current;
+            }
+
+            current = Win32Helper.GetWindow(current, Win32Helper.GW_HWNDNEXT);
+        }
+
+        return boundary;
+    }
+
+    internal static bool IsRestingAtDesktopLayer(IntPtr windowHandle)
+    {
+        if (windowHandle == IntPtr.Zero ||
+            !Win32Helper.IsWindow(windowHandle) ||
+            Win32Helper.IsWindowTopMost(windowHandle))
+        {
+            return false;
+        }
+
+        IntPtr expectedOwner = ShouldAttachRestingWindowToDesktop()
+            ? DesktopShellWindowRecovery.GetValidatedOwner(FindDesktopIconView())
+            : IntPtr.Zero;
+        if (ShouldAttachRestingWindowToDesktop() &&
+            (expectedOwner == IntPtr.Zero ||
+             Win32Helper.GetWindowLongPtr(windowHandle, Win32Helper.GWLP_HWNDPARENT) != expectedOwner))
+        {
+            return false;
+        }
+
+        IntPtr boundary = FindDesktopPeerRaiseBoundary(windowHandle, IsDesktopWidgetWindow);
+        return IsBelowDesktopPeerBoundary(windowHandle, boundary) &&
+            IsAboveDesktopShellHosts(windowHandle);
+    }
+
+    internal static string DescribeNativeDesktopLayer(IntPtr windowHandle)
+    {
+        if (windowHandle == IntPtr.Zero || !Win32Helper.IsWindow(windowHandle))
+        {
+            return $"hwnd=0x{windowHandle.ToInt64():X} exists=False";
+        }
+
+        IntPtr owner = Win32Helper.GetWindowLongPtr(windowHandle, Win32Helper.GWLP_HWNDPARENT);
+        IntPtr boundary = FindDesktopPeerRaiseBoundary(windowHandle, IsDesktopWidgetWindow);
+        int cloakResult = Win32Helper.DwmGetWindowAttribute(windowHandle, 14, out int cloaked, sizeof(int));
+        _ = Win32Helper.GetWindowRect(windowHandle, out var bounds);
+        return $"hwnd=0x{windowHandle.ToInt64():X} nativeVisible={Win32Helper.IsWindowVisible(windowHandle)} " +
+            $"cloaked={(cloakResult == 0 ? cloaked : -1)} topmost={Win32Helper.IsWindowTopMost(windowHandle)} " +
+            $"noActivate={IsWindowNoActivate(windowHandle)} owner=0x{owner.ToInt64():X} " +
+            $"boundary=0x{boundary.ToInt64():X} belowApplications={IsBelowDesktopPeerBoundary(windowHandle, boundary)} " +
+            $"aboveDesktopHosts={IsAboveDesktopShellHosts(windowHandle)} " +
+            $"bounds={bounds.Left},{bounds.Top},{bounds.Right},{bounds.Bottom}";
+    }
+
+    private static bool IsBelowDesktopPeerBoundary(IntPtr windowHandle, IntPtr boundary)
+    {
+        if (Win32Helper.IsWindowTopMost(windowHandle))
+        {
+            return false;
+        }
+
+        if (boundary == Win32Helper.HWND_NOTOPMOST || boundary == Win32Helper.HWND_TOP)
+        {
+            return true;
+        }
+
+        IntPtr current = Win32Helper.GetWindow(windowHandle, Win32Helper.GW_HWNDPREV);
+        while (current != IntPtr.Zero)
+        {
+            if (current == boundary)
+            {
+                return true;
+            }
+
+            current = Win32Helper.GetWindow(current, Win32Helper.GW_HWNDPREV);
+        }
+
+        return false;
+    }
+
+    private static bool IsAboveDesktopShellHosts(IntPtr windowHandle)
+    {
+        IntPtr current = Win32Helper.GetWindow(windowHandle, Win32Helper.GW_HWNDPREV);
+        while (current != IntPtr.Zero)
+        {
+            if (IsDesktopShellHost(current) && IsRenderedWindow(current))
+            {
+                return false;
+            }
+
+            current = Win32Helper.GetWindow(current, Win32Helper.GW_HWNDPREV);
+        }
+
+        return true;
+    }
+
+    private static bool IsDesktopShellHost(IntPtr windowHandle) =>
+        HasWindowClass(windowHandle, "WorkerW") || HasWindowClass(windowHandle, "Progman");
+
+    private static bool IsRenderedWindow(IntPtr windowHandle)
+    {
+        return Win32Helper.IsWindowVisible(windowHandle) && !Win32Helper.IsIconic(windowHandle) &&
+            (Win32Helper.DwmGetWindowAttribute(windowHandle, 14, out int cloaked, sizeof(int)) != 0 || cloaked == 0) &&
+            Win32Helper.GetWindowRect(windowHandle, out var bounds) &&
+            bounds.Right > bounds.Left && bounds.Bottom > bounds.Top;
+    }
+
+    private static bool IsDesktopWidgetWindow(IntPtr windowHandle) =>
+        App.Current?.WidgetManager?.IsWidgetWindow(windowHandle) == true;
 
     /// <summary>
     /// Applies and verifies an explicit peer order for an expanded capsule.
@@ -663,10 +861,17 @@ public static class WidgetLayerService
             return true;
         }
 
+        bool desktopPinned = UsesDesktopPinnedMode();
+        IntPtr desktopBoundary = desktopPinned
+            ? FindDesktopPeerRaiseBoundary(handles[0], IsDesktopWidgetWindow)
+            : IntPtr.Zero;
+
         // Reordering HWNDs repaints overlapping shadow regions even when the
         // relative peer order is already correct, so a no-op transaction must
         // never reach SetWindowPos.
-        if (IsPeerOrderAlreadyApplied(handles))
+        if (IsPeerOrderAlreadyApplied(handles) &&
+            (!desktopPinned || IsBelowDesktopPeerBoundary(handles[0], desktopBoundary) &&
+                IsAboveDesktopShellHosts(handles[0])))
         {
             App.LogVerbose(
                 $"[ZOrder] Peer order unchanged count={handles.Count} " +
@@ -674,10 +879,14 @@ public static class WidgetLayerService
             return true;
         }
 
-        IntPtr currentHighest = FindHighestPeer(handles);
-        IntPtr boundary = currentHighest == IntPtr.Zero
-            ? IntPtr.Zero
-            : Win32Helper.GetWindow(currentHighest, Win32Helper.GW_HWNDPREV);
+        IntPtr boundary = desktopBoundary;
+        if (!desktopPinned)
+        {
+            IntPtr currentHighest = FindHighestPeer(handles);
+            boundary = currentHighest == IntPtr.Zero
+                ? IntPtr.Zero
+                : Win32Helper.GetWindow(currentHighest, Win32Helper.GW_HWNDPREV);
+        }
         return ApplyWindowOrderHighestToLowest(
             handles,
             boundary == IntPtr.Zero ? Win32Helper.HWND_TOP : boundary,
@@ -765,6 +974,7 @@ public static class WidgetLayerService
 
     public static void InvalidateDesktopIconViewCache()
     {
+        Interlocked.Increment(ref s_desktopHostGeneration);
         lock (s_desktopLayerLock)
         {
             s_cachedDesktopIconView = IntPtr.Zero;
@@ -794,19 +1004,7 @@ public static class WidgetLayerService
     /// </summary>
     public static bool ShouldSuppressPointerActivation(IntPtr windowHandle)
     {
-        IntPtr foregroundRoot = GetForegroundRoot(Win32Helper.GetForegroundWindow());
-        bool hasForeground =
-            foregroundRoot != IntPtr.Zero &&
-            Win32Helper.IsWindow(foregroundRoot);
-        bool foregroundIsWidget =
-            foregroundRoot == windowHandle ||
-            App.Current?.WidgetManager?.IsWidgetWindow(foregroundRoot) == true;
-
-        return WidgetLayerPointerActivationPolicy.ShouldSuppress(
-            UsesDesktopPinnedMode(),
-            hasForeground,
-            hasForeground && IsDesktopShellWindow(foregroundRoot),
-            foregroundIsWidget);
+        return WidgetLayerPointerActivationPolicy.ShouldSuppress(UsesDesktopPinnedMode());
     }
 
     /// <summary>
@@ -823,11 +1021,9 @@ public static class WidgetLayerService
     }
 
     /// <summary>
-    /// Allows a desktop-pinned widget to become active only when the current
-    /// foreground belongs to the desktop shell or another widget. The
-    /// WS_EX_NOACTIVATE resting style makes this decision before the routed
-    /// pointer event, so clicking an exposed blank area cannot raise the whole
-    /// HWND above a foreign application.
+    /// Ordinary pointer presses never activate a desktop-pinned HWND. Activating
+    /// an Explorer-owned popup can reorder the shell owner as well as the widget.
+    /// Explicit text entry uses the separate keyboard-input path.
     /// </summary>
     public static bool TryAllowDesktopPinnedPointerActivation(IntPtr windowHandle)
     {
@@ -837,14 +1033,8 @@ public static class WidgetLayerService
             return true;
         }
 
-        if (ShouldSuppressPointerActivation(windowHandle))
-        {
-            SetWindowNoActivate(windowHandle, enabled: true);
-            return false;
-        }
-
-        SetWindowNoActivate(windowHandle, enabled: false);
-        return true;
+        SetWindowNoActivate(windowHandle, enabled: true);
+        return false;
     }
 
     /// <summary>
@@ -854,7 +1044,28 @@ public static class WidgetLayerService
     /// </summary>
     public static void PrepareForDesktopPinnedKeyboardInput(IntPtr windowHandle)
     {
+        // Activate text input independently of Explorer, then restore the desktop
+        // owner once the focus request has completed.
+        DetachFromDesktopIconLayerIfNeeded(windowHandle);
         SetWindowNoActivate(windowHandle, enabled: false);
+    }
+
+    internal static void RestoreAfterDesktopPinnedKeyboardInput(IntPtr windowHandle)
+    {
+        if (!UsesDesktopPinnedMode() || IsSessionRecoverySuspended)
+        {
+            return;
+        }
+
+        ApplyDesktopPinnedActivationStyle(windowHandle);
+        if (TryAttachToDesktopIconLayer(windowHandle, placeAtBottom: false, showWindow: false))
+        {
+            _ = TryBringDesktopPeerBehindApplications(windowHandle, IsDesktopWidgetWindow, showWindow: false);
+        }
+        else
+        {
+            MoveToDesktopBottom(windowHandle, showWindow: false);
+        }
     }
 
     public static bool IsWindowNoActivate(IntPtr windowHandle)
@@ -902,6 +1113,7 @@ public static class WidgetLayerService
                 Win32Helper.SWP_NOSIZE |
                 Win32Helper.SWP_NOZORDER |
                 Win32Helper.SWP_NOACTIVATE |
+                Win32Helper.SWP_NOOWNERZORDER |
                 Win32Helper.SWP_FRAMECHANGED);
         App.LogVerbose(
             $"[WidgetLayer] no-activate style hwnd=0x{windowHandle.ToInt64():X} " +
@@ -936,7 +1148,7 @@ public static class WidgetLayerService
             return false;
         }
 
-        if (Volatile.Read(ref s_startupDesktopLayerAttachmentDeferred))
+        if (IsSessionRecoverySuspended || Volatile.Read(ref s_startupDesktopLayerAttachmentDeferred))
         {
             App.LogVerbose(
                 $"[Startup] Desktop-layer attach deferred hwnd=0x{windowHandle.ToInt64():X}");
@@ -950,6 +1162,11 @@ public static class WidgetLayerService
             return false;
         }
 
+        // SHELLDLL_DefView is a WS_CHILD window, which cannot own a top-level
+        // window. Use its validated Explorer root, never the child HWND.
+        IntPtr desktopOwner = DesktopShellWindowRecovery.GetValidatedOwner(desktopIconView);
+        if (desktopOwner == IntPtr.Zero) return false;
+
         lock (s_desktopLayerLock)
         {
             if (!s_desktopLayerAttachments.ContainsKey(windowHandle))
@@ -958,49 +1175,48 @@ public static class WidgetLayerService
                     Win32Helper.GetWindowLongPtr(windowHandle, Win32Helper.GWLP_HWNDPARENT));
             }
 
-            if (Win32Helper.GetWindowLongPtr(windowHandle, Win32Helper.GWLP_HWNDPARENT) != desktopIconView)
+            if (Win32Helper.GetWindowLongPtr(windowHandle, Win32Helper.GWLP_HWNDPARENT) != desktopOwner)
             {
                 Win32Helper.SetLastError(0);
                 _ = Win32Helper.SetWindowLongPtr(
                     windowHandle,
                     Win32Helper.GWLP_HWNDPARENT,
-                    desktopIconView);
+                    desktopOwner);
             }
 
             IntPtr actualOwner = Win32Helper.GetWindowLongPtr(windowHandle, Win32Helper.GWLP_HWNDPARENT);
-            if (actualOwner != desktopIconView)
+            if (actualOwner != desktopOwner)
             {
                 int error = Marshal.GetLastWin32Error();
-                App.Log($"[WidgetLayer] DesktopPinned owner attach failed hwnd=0x{windowHandle.ToInt64():X} defView=0x{desktopIconView.ToInt64():X} actual=0x{actualOwner.ToInt64():X} error={error}");
+                App.Log($"[WidgetLayer] DesktopPinned owner attach failed hwnd=0x{windowHandle.ToInt64():X} owner=0x{desktopOwner.ToInt64():X} actual=0x{actualOwner.ToInt64():X} error={error}");
                 RestoreOriginalOwner(windowHandle);
                 s_cachedDesktopIconView = IntPtr.Zero;
                 return false;
             }
 
-            Win32Helper.ClearWindowTopMost(windowHandle);
             if (placeAtBottom)
             {
-                uint flags = Win32Helper.SWP_NOMOVE |
-                    Win32Helper.SWP_NOSIZE |
-                    Win32Helper.SWP_NOACTIVATE;
+                uint flags = Win32Helper.WindowLayerPositionFlags;
                 if (showWindow)
                 {
                     flags |= Win32Helper.SWP_SHOWWINDOW;
                 }
 
-                Win32Helper.SetWindowPos(
-                    windowHandle,
-                    Win32Helper.HWND_BOTTOM,
-                    0,
-                    0,
-                    0,
-                    0,
-                    flags);
+                bool moved = UsesDesktopPinnedMode()
+                    ? TryBringDesktopPeerBehindApplications(windowHandle, IsDesktopWidgetWindow, showWindow)
+                    : Win32Helper.SetWindowPos(
+                        windowHandle, Win32Helper.HWND_BOTTOM, 0, 0, 0, 0, flags);
+                if (!moved)
+                {
+                    App.Log($"[WidgetLayer] Desktop placement failed hwnd=0x{windowHandle.ToInt64():X} error={Marshal.GetLastWin32Error()}");
+                    RestoreOriginalOwner(windowHandle);
+                    return false;
+                }
             }
 
             App.LogVerbose(
                 $"[WidgetLayer] Desktop owner attached hwnd=0x{windowHandle.ToInt64():X} " +
-                $"defView=0x{desktopIconView.ToInt64():X} bottom={placeAtBottom}");
+                $"owner=0x{desktopOwner.ToInt64():X} defView=0x{desktopIconView.ToInt64():X} bottom={placeAtBottom}");
             return true;
         }
     }
@@ -1031,10 +1247,16 @@ public static class WidgetLayerService
             return;
         }
 
-        // Fallback: detach and use NOTOPMOST
+        // Fallback: detach and demote directly to the desktop bottom.
         DetachFromDesktopIconLayerIfNeeded(windowHandle);
-        Win32Helper.ClearWindowTopMost(windowHandle);
-        Win32Helper.SetWindowToBottom(windowHandle);
+        if (UsesDesktopPinnedMode())
+        {
+            _ = TryBringDesktopPeerBehindApplications(windowHandle, IsDesktopWidgetWindow, showWindow);
+        }
+        else
+        {
+            Win32Helper.SetWindowToBottom(windowHandle);
+        }
     }
 
     private static void RestoreOriginalOwner(IntPtr windowHandle)
@@ -1048,7 +1270,7 @@ public static class WidgetLayerService
         _ = Win32Helper.SetWindowLongPtr(
             windowHandle,
             Win32Helper.GWLP_HWNDPARENT,
-            attachment.OriginalOwner);
+            Win32Helper.IsWindow(attachment.OriginalOwner) ? attachment.OriginalOwner : IntPtr.Zero);
         Win32Helper.SetWindowPos(
             windowHandle,
             Win32Helper.HWND_NOTOPMOST,
@@ -1056,16 +1278,19 @@ public static class WidgetLayerService
             0,
             0,
             0,
-            Win32Helper.SWP_NOMOVE |
-                Win32Helper.SWP_NOSIZE |
-                Win32Helper.SWP_NOACTIVATE);
+            Win32Helper.WindowLayerPositionFlags);
         s_desktopLayerAttachments.Remove(windowHandle);
         App.LogVerbose($"[WidgetLayer] DesktopPinned owner detached hwnd=0x{windowHandle.ToInt64():X}");
     }
 
-    private static IntPtr FindDesktopIconView()
+    internal static IntPtr FindDesktopIconView()
     {
-        if (s_cachedDesktopIconView != IntPtr.Zero && Win32Helper.IsWindow(s_cachedDesktopIconView))
+        if (IsSessionRecoverySuspended)
+        {
+            return IntPtr.Zero;
+        }
+
+        if (IsUsableDesktopIconView(s_cachedDesktopIconView))
         {
             return s_cachedDesktopIconView;
         }
@@ -1079,7 +1304,7 @@ public static class WidgetLayerService
         Win32Helper.EnumWindows((hWnd, _) =>
         {
             IntPtr defView = FindDesktopIconViewChild(hWnd);
-            if (defView != IntPtr.Zero)
+            if (IsUsableDesktopIconView(defView))
             {
                 existingDefView = defView;
                 return false; // stop enumeration
@@ -1097,6 +1322,20 @@ public static class WidgetLayerService
         // The caller already has a bottom-of-desktop fallback and can retry on a
         // later layer operation after Explorer finishes initializing.
         return IntPtr.Zero;
+    }
+
+    private static bool IsUsableDesktopIconView(IntPtr view)
+    {
+        return view != IntPtr.Zero &&
+            DesktopShellWindowRecovery.GetValidatedOwner(view) != IntPtr.Zero;
+    }
+
+    private static bool HasWindowClass(IntPtr window, string expected)
+    {
+        var className = new System.Text.StringBuilder(256);
+        return window != IntPtr.Zero &&
+            Win32Helper.GetClassName(window, className, className.Capacity) > 0 &&
+            string.Equals(className.ToString(), expected, StringComparison.Ordinal);
     }
 
     private static IntPtr FindHighestPeer(IReadOnlyCollection<IntPtr> handles)
@@ -1184,16 +1423,16 @@ internal sealed class DesktopIconViewStabilityTracker
 
 internal static class WidgetLayerPointerActivationPolicy
 {
-    public static bool ShouldSuppress(
+    public static bool ShouldSuppressFocus(
         bool usesDesktopPinnedMode,
-        bool hasForegroundWindow,
-        bool foregroundIsDesktopShell,
-        bool foregroundIsWidget)
+        bool isKeyboardInput,
+        bool pointerDriven,
+        bool windowIsForeground) =>
+        usesDesktopPinnedMode && !isKeyboardInput && pointerDriven && !windowIsForeground;
+
+    public static bool ShouldSuppress(bool usesDesktopPinnedMode)
     {
-        return usesDesktopPinnedMode &&
-            hasForegroundWindow &&
-            !foregroundIsDesktopShell &&
-            !foregroundIsWidget;
+        return usesDesktopPinnedMode;
     }
 
     public static bool ShouldPreserveActivatingClick(

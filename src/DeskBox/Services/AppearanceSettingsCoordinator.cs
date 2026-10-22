@@ -268,6 +268,7 @@ public sealed class AppearanceSettingsCoordinator : IAppearanceSettings
     {
         ThrowIfStopped();
         string normalized = materialType is
+            SettingsService.WidgetMaterialTypeGlass or
             SettingsService.WidgetMaterialTypeMica or
             SettingsService.WidgetMaterialTypeMicaAlt or
             SettingsService.WidgetMaterialTypeAcrylic or

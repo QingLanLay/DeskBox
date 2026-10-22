@@ -1,4 +1,5 @@
 {
+  "Settings.Material.Glass": "Стекло",
   "Settings.AutoStart.Mode.Title": "Способ автозапуска",
   "Settings.AutoStart.Mode.Description": "Стандартный режим управляется в автозагрузке Windows; задача планировщика может запускаться раньше.",
   "Settings.AutoStart.Mode.Standard": "Стандартный (рекомендуется)",
@@ -2403,7 +2404,7 @@
   "Glance.Cache.Clear": "Очистить кэш",
   "Glance.Cache.Cleared": "Кэш очищен",
   "Settings.Windows10VisualCompatibility.Title": "Визуальная совместимость с Windows 10",
-  "Settings.Windows10VisualCompatibility.Message": "Mica и системное скругление окон требуют Windows 11. В Windows 10 используется акрил или сплошной цвет с прямыми углами окон.",
+  "Settings.Windows10VisualCompatibility.Message": "Mica требует Windows 11. Windows 10 использует акрил или сплошной цвет и поддерживает настройку углов виджетов.",
   "Settings.Dialog.QuickAccessOperationFailedBody": "DeskBox не удалось обновить быстрый доступ в Проводнике. Повторите попытку позже.",
   "DesktopOrganization.Result.FailedBody": "Не удалось завершить организацию рабочего стола. Повторите попытку позже.",
   "DesktopOrganization.Undo.FailedBody": "Не удалось отменить организацию рабочего стола. Повторите попытку позже.",

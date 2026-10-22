@@ -60,7 +60,9 @@ public sealed class AppLifecycleRecoverySignalClassifierTests
     [Theory]
     [InlineData(0x0008, "session-unlock")]
     [InlineData(0x0005, "session-reconnect")]
-    [InlineData(0x0009, "session-reconnect")]
+    [InlineData(0x0001, "session-reconnect")]
+    [InlineData(0x0003, "session-reconnect")]
+    [InlineData(0x000F, "session-reconnect")]
     public void SessionRecoverySignals_AreClassified(uint sessionEvent, string expected)
     {
         string? reason = AppLifecycleRecoverySignalClassifier.ResolveRecoveryReason(
@@ -69,6 +71,20 @@ public sealed class AppLifecycleRecoverySignalClassifierTests
             TaskbarCreatedMessage);
 
         Assert.Equal(expected, reason);
+    }
+
+    [Theory]
+    [InlineData(0x0004)] // WTS_REMOTE_DISCONNECT
+    [InlineData(0x0006)] // WTS_SESSION_LOGOFF
+    [InlineData(0x0007)] // WTS_SESSION_LOCK
+    [InlineData(0x0009)] // WTS_SESSION_REMOTE_CONTROL, not WTS_REMOTE_CONNECT
+    [InlineData(0x000A)] // WTS_SESSION_CREATE, not WTS_REMOTE_DISCONNECT
+    public void SessionUnavailableOrUnrelatedSignals_DoNotRequestRecovery(uint sessionEvent)
+    {
+        Assert.Null(AppLifecycleRecoverySignalClassifier.ResolveRecoveryReason(
+            AppLifecycleRecoverySignalClassifier.WmWtsSessionChange,
+            new UIntPtr(sessionEvent),
+            TaskbarCreatedMessage));
     }
 
     [Fact]

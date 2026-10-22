@@ -218,7 +218,9 @@ public sealed class NativeDropTarget : IDisposable
     /// </summary>
     public bool HasShellApplicationData { get; private set; }
 
-    internal bool IsRegistered => _registered;
+    internal bool IsRegistered => _registered &&
+        Win32Helper.IsWindow(_hwnd) &&
+        OleDropTargetNativeMethods.GetPropW(_hwnd, "OleDropTargetInterface") != IntPtr.Zero;
 
     static NativeDropTarget()
     {
@@ -271,15 +273,22 @@ public sealed class NativeDropTarget : IDisposable
         }
     }
 
-    public void Register()
+    public void Register(bool force = false)
     {
-        if (_registered)
+        if (IsRegistered && !force)
         {
             return;
         }
 
         try
         {
+            if (force)
+            {
+                Unregister();
+                ResetDragDataState();
+                _rightButtonDragActive = false;
+            }
+
             NativeDropTargetComInterop.Register(_hwnd, _comObject);
             _registered = true;
             App.Log(

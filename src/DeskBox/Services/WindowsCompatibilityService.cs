@@ -71,10 +71,8 @@ public static class WindowsCompatibilityService
     }
 
     /// <summary>
-    /// Resolves the corner preference that can actually be rendered on the
-    /// current platform. The persisted setting remains the user's requested
-    /// value so a Win10 profile can regain its preference after moving to
-    /// Windows 11.
+    /// Normalizes the requested corner style. Windows 10 renders it using a
+    /// window region; Windows 11 uses native DWM corners.
     /// </summary>
     public static string ResolveEffectiveWidgetCornerPreference(string? requestedPreference)
     {
@@ -92,15 +90,11 @@ public static class WindowsCompatibilityService
                 ? requestedPreference
                 : SettingsService.WidgetCornerPreferenceRound;
 
-        return osBuild < Windows11Build
-            ? SettingsService.WidgetCornerPreferenceSquare
-            : normalized;
+        return normalized;
     }
 
     /// <summary>
-    /// Resolves the compact media corner mode that can actually be rendered
-    /// on the current platform. Win10 keeps all capsule media surfaces square,
-    /// while Win11 continues to honor the explicit media preference.
+    /// Normalizes compact media corners, rendered by XAML on both platforms.
     /// </summary>
     public static string ResolveEffectiveWidgetCompactMediaCornerMode(string? requestedMode)
     {
@@ -112,9 +106,7 @@ public static class WindowsCompatibilityService
         int osBuild)
     {
         string normalized = SettingsService.NormalizeWidgetCompactMediaCornerMode(requestedMode);
-        return osBuild < Windows11Build
-            ? SettingsService.WidgetCompactMediaCornerSquare
-            : normalized;
+        return normalized;
     }
 
     internal static string ResolveWidgetMaterialTypeForBuild(
@@ -122,6 +114,7 @@ public static class WindowsCompatibilityService
         int osBuild)
     {
         string normalized = requestedMaterialType is
+            SettingsService.WidgetMaterialTypeGlass or
             SettingsService.WidgetMaterialTypeMica or
             SettingsService.WidgetMaterialTypeMicaAlt or
             SettingsService.WidgetMaterialTypeAcrylic or

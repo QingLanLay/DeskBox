@@ -36,6 +36,25 @@ public static partial class Win32Helper
     [DllImport("winmm.dll", EntryPoint = "timeEndPeriod")]
     private static extern uint TimeEndPeriod(uint periodMilliseconds);
 
+    [LibraryImport("gdi32.dll", SetLastError = true)]
+    public static partial IntPtr CreateRoundRectRgn(
+        int left,
+        int top,
+        int right,
+        int bottom,
+        int ellipseWidth,
+        int ellipseHeight);
+
+    [LibraryImport("gdi32.dll", SetLastError = true)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    public static partial bool DeleteObject(IntPtr objectHandle);
+
+    [LibraryImport("user32.dll", SetLastError = true)]
+    public static partial int SetWindowRgn(
+        IntPtr hWnd,
+        IntPtr region,
+        [MarshalAs(UnmanagedType.Bool)] bool redraw);
+
     /// <summary>
     /// Requests the DirectComposition compositor clock to run at its active
     /// cadence while a short interactive animation is in progress. This is a
@@ -177,6 +196,8 @@ public static partial class Win32Helper
     public const uint SWP_FRAMECHANGED = 0x0020;
     public const uint SWP_NOOWNERZORDER = 0x0200;
     public const uint SWP_DEFERERASE = 0x2000;
+    internal const uint WindowLayerPositionFlags =
+        SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE | SWP_NOOWNERZORDER;
     public const int SW_HIDE = 0;
     public const int SW_SHOWNORMAL = 1;
     public const int SW_SHOWNOACTIVATE = 4;
@@ -805,6 +826,8 @@ public static partial class Win32Helper
     public const uint WM_QUIT = 0x0012;
     public const uint PM_NOREMOVE = 0x0000;
     public const int WM_MOUSEACTIVATE = 0x0021;
+    public const int WM_POINTERACTIVATE = 0x024B;
+    public const int WM_SHOWWINDOW = 0x0018;
     public const int WM_LBUTTONDOWN = 0x0201;
     public const int WM_MOUSEWHEEL = 0x020A;
     public const int WM_RBUTTONDOWN = 0x0204;
@@ -819,6 +842,7 @@ public static partial class Win32Helper
     public const int WM_EXITSIZEMOVE = 0x0232;
     public const int MA_ACTIVATE = 1;
     public const int MA_NOACTIVATE = 3;
+    public const int PA_NOACTIVATE = 3;
 
     public const int HTCLIENT = 1;
     public const int HTCAPTION = 2;
@@ -1502,11 +1526,11 @@ public static partial class Win32Helper
     /// </summary>
     public static void SetWindowToBottom(IntPtr hWnd)
     {
-        bool r1 = SetWindowPos(hWnd, HWND_NOTOPMOST, 0, 0, 0, 0,
-            SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
-        bool r2 = SetWindowPos(hWnd, HWND_BOTTOM, 0, 0, 0, 0,
-            SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
-        App.LogVerbose($"[ZOrder] SetWindowToBottom hwnd=0x{hWnd.ToInt64():X} r1={r1} r2={r2}");
+        // HWND_BOTTOM also clears TOPMOST in the same transaction, avoiding
+        // an intermediate frame at the top of the normal application band.
+        bool moved = SetWindowPos(hWnd, HWND_BOTTOM, 0, 0, 0, 0,
+            WindowLayerPositionFlags);
+        App.LogVerbose($"[ZOrder] SetWindowToBottom hwnd=0x{hWnd.ToInt64():X} moved={moved}");
     }
 
     /// <summary>
@@ -1516,7 +1540,7 @@ public static partial class Win32Helper
     public static void SetWindowToDesktopLevel(IntPtr hWnd)
     {
         bool r = SetWindowPos(hWnd, HWND_NOTOPMOST, 0, 0, 0, 0,
-            SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
+            WindowLayerPositionFlags);
         App.Log($"[ZOrder] SetWindowToDesktopLevel hwnd=0x{hWnd.ToInt64():X} r={r}");
     }
 
@@ -1526,7 +1550,7 @@ public static partial class Win32Helper
     public static void BringWindowToFront(IntPtr hWnd)
     {
         SetWindowPos(hWnd, HWND_TOP, 0, 0, 0, 0,
-            SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE | SWP_SHOWWINDOW);
+            WindowLayerPositionFlags | SWP_SHOWWINDOW);
     }
 
     /// <summary>
@@ -1547,7 +1571,7 @@ public static partial class Win32Helper
         IntPtr hWnd,
         bool showWindow)
     {
-        uint flags = SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE;
+        uint flags = WindowLayerPositionFlags;
         if (showWindow)
         {
             flags |= SWP_SHOWWINDOW;
@@ -1572,7 +1596,7 @@ public static partial class Win32Helper
     /// </summary>
     public static void SetWindowTopMost(IntPtr hWnd, bool showWindow)
     {
-        uint flags = SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE;
+        uint flags = WindowLayerPositionFlags;
         if (showWindow)
         {
             flags |= SWP_SHOWWINDOW;
@@ -1588,7 +1612,7 @@ public static partial class Win32Helper
     public static void ClearWindowTopMost(IntPtr hWnd)
     {
         SetWindowPos(hWnd, HWND_NOTOPMOST, 0, 0, 0, 0,
-            SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
+            WindowLayerPositionFlags);
     }
 
     public static bool IsWindowTopMost(IntPtr hWnd)

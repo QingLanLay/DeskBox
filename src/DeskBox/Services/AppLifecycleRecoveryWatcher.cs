@@ -13,12 +13,6 @@ internal sealed class AppLifecycleRecoveryWatcher : IDisposable
     private const uint WmQueryEndSession = 0x0011;
     private const uint WmEndSession = 0x0016;
     private const uint WmNcDestroy = 0x0082;
-    private const uint WtsSessionLock = 0x0007;
-    private const uint WtsSessionUnlock = 0x0008;
-    private const uint WtsSessionLogon = 0x0005;
-    private const uint WtsSessionLogoff = 0x0006;
-    private const uint WtsSessionRemoteConnect = 0x0009;
-    private const uint WtsSessionRemoteDisconnect = 0x000A;
     private const uint NotifyForThisSession = 0;
     private static readonly uint s_taskbarCreatedMessage = Win32Helper.RegisterWindowMessage("TaskbarCreated");
     private static readonly UIntPtr SubclassId = new(0xDBA7);
@@ -28,6 +22,8 @@ internal sealed class AppLifecycleRecoveryWatcher : IDisposable
     private readonly DispatcherQueueTimer _timer;
     private readonly Action<string> _recoveryAction;
     private readonly Action<string>? _endSessionAction;
+    private readonly Action<bool>? _sessionStateChangedAction;
+    private readonly AppLifecycleRecoverySessionState _sessionState = new();
     private readonly Win32Helper.SubclassProc _subclassProc;
     private bool _isDisposed;
     private bool _isSubclassInstalled;
@@ -35,15 +31,20 @@ internal sealed class AppLifecycleRecoveryWatcher : IDisposable
     private IntPtr _powerNotifyHandle;
     private string _pendingReasons = string.Empty;
 
+    internal bool IsSessionAvailable => _sessionState.IsSessionAvailable;
+    internal long SessionGeneration { get; private set; }
+
     public AppLifecycleRecoveryWatcher(
         IntPtr hWnd,
         DispatcherQueue dispatcherQueue,
         Action<string> recoveryAction,
-        Action<string>? endSessionAction = null)
+        Action<string>? endSessionAction = null,
+        Action<bool>? sessionStateChangedAction = null)
     {
         _hWnd = hWnd;
         _recoveryAction = recoveryAction;
         _endSessionAction = endSessionAction;
+        _sessionStateChangedAction = sessionStateChangedAction;
         _subclassProc = WindowSubclassProc;
         _timer = dispatcherQueue.CreateTimer();
         _timer.Interval = RecoveryDelay;
@@ -106,12 +107,22 @@ internal sealed class AppLifecycleRecoveryWatcher : IDisposable
         UIntPtr subclassId,
         UIntPtr refData)
     {
+        bool sessionWasAvailable = _sessionState.IsSessionAvailable;
         string? recoveryReason =
-            AppLifecycleRecoverySignalClassifier.ResolveRecoveryReason(
+            _sessionState.Observe(
                 message,
                 wParam,
                 lParam,
                 s_taskbarCreatedMessage);
+        if (sessionWasAvailable != _sessionState.IsSessionAvailable)
+        {
+            SessionGeneration++;
+            _timer.Stop();
+            _pendingReasons = string.Empty;
+            NotifySessionAvailability(_sessionState.IsSessionAvailable);
+            App.Log($"[Lifecycle] Session available={_sessionState.IsSessionAvailable}; pending recovery reset.");
+        }
+
         if (recoveryReason is not null)
         {
             QueueRecovery(recoveryReason);
@@ -126,24 +137,6 @@ internal sealed class AppLifecycleRecoveryWatcher : IDisposable
             if (wParam != UIntPtr.Zero)
             {
                 InvokeEndSessionAction("end-session");
-            }
-        }
-        else if (message == AppLifecycleRecoverySignalClassifier.WmWtsSessionChange)
-        {
-            uint sessionEvent = unchecked((uint)wParam.ToUInt64());
-            if (sessionEvent == WtsSessionUnlock ||
-                sessionEvent == WtsSessionLogon ||
-                sessionEvent == WtsSessionRemoteConnect)
-            {
-                QueueRecovery(sessionEvent == WtsSessionUnlock
-                    ? "session-unlock"
-                    : "session-reconnect");
-            }
-            else if (sessionEvent == WtsSessionLock ||
-                     sessionEvent == WtsSessionLogoff ||
-                     sessionEvent == WtsSessionRemoteDisconnect)
-            {
-                App.Log("[Lifecycle] Session ended or locked; deferring external-state recovery.");
             }
         }
         else if (message == WmNcDestroy)
@@ -166,9 +159,15 @@ internal sealed class AppLifecycleRecoveryWatcher : IDisposable
         }
     }
 
+    private void NotifySessionAvailability(bool available)
+    {
+        try { _sessionStateChangedAction?.Invoke(available); }
+        catch (Exception ex) { App.Log($"[Lifecycle] Session availability callback failed: {ex}"); }
+    }
+
     private void QueueRecovery(string reason)
     {
-        if (_isDisposed)
+        if (_isDisposed || !_sessionState.IsSessionAvailable)
         {
             return;
         }
@@ -190,8 +189,16 @@ internal sealed class AppLifecycleRecoveryWatcher : IDisposable
     private void RecoveryTimer_Tick(DispatcherQueueTimer sender, object args)
     {
         _timer.Stop();
-        if (_isDisposed || string.IsNullOrWhiteSpace(_pendingReasons))
+        if (_isDisposed || !_sessionState.IsSessionAvailable || string.IsNullOrWhiteSpace(_pendingReasons))
         {
+            return;
+        }
+
+        if (!Win32Helper.IsInteractiveDesktopAvailable())
+        {
+            // Display-on/unlock can precede the switch away from Winlogon.
+            // Keep the reasons pending until the user's desktop takes input.
+            _timer.Start();
             return;
         }
 

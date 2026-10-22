@@ -136,9 +136,7 @@ public partial class App
 
         _trayWindow = new Window { Title = "DeskBox Tray Host" };
         AppBranding.ApplyWindowIcon(_trayWindow.AppWindow);
-        // Early-logon sessions can reject these windowing calls (E_NOTIMPL is
-        // observed on IsShownInSwitchers); a 1x1 host window that leaks into
-        // Alt+Tab is the acceptable degraded state, failing startup is not.
+        WindowShellState.TryApplyBorderlessOverlappedPresenter(_trayWindow.AppWindow);
         WindowShellState.TryHideFromSwitchers(_trayWindow.AppWindow);
         try
         {
@@ -219,6 +217,8 @@ public partial class App
             Log($"[Tray] Tray window activation not applied: {ex.Message}");
         }
 
+        _trayWindowGuard = new HiddenMessageWindowGuard(WindowNative.GetWindowHandle(_trayWindow));
+
         StartTrayIconCreationWithRetry();
 
         try
@@ -245,6 +245,8 @@ public partial class App
 
         ThemeService.AppearanceChanged += UpdateTrayIconAppearance;
     }
+
+    private HiddenMessageWindowGuard? _trayWindowGuard;
 
     /// <summary>Attempts per tray creation pass through the early-logon window
     /// where the taskbar may not exist yet (roughly the first 30 seconds after

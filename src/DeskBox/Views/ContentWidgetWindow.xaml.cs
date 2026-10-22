@@ -631,7 +631,7 @@ public sealed partial class ContentWidgetWindow : WidgetWindowBase, IDesktopWidg
                 ContentWidgetShell.BackgroundSurface.Background,
                 surfaceColor);
         }
-        else if (WindowsCompatibilityService.UsesLegacyWindowAcrylic &&
+        else if (!IsRoundedMaterialBackdropActive && WindowsCompatibilityService.UsesLegacyWindowAcrylic &&
             SettingsService.IsAcrylicMaterial(materialType))
         {
             var overlayColor = WidgetMaterialVisualCalculator.BuildLegacyAcrylicSurfaceOverlayColor(
@@ -905,6 +905,7 @@ private bool PrepareTrayShowAnimationCore(bool restoreBoundsForCurrentTopology)
 
     public bool PrepareTrayHideAnimation(bool persistVisibility = true)
     {
+        App.LogVerbose($"[WidgetVisibility] PrepareHide kind={_config.WidgetKind} id={_config.Id} visible={Visible}");
         if (!Visible || IsHideAnimationRunning)
         {
             LogTrayWindow($"PrepareHide skipped visible={Visible} hideRunning={IsHideAnimationRunning}");
@@ -1010,6 +1011,8 @@ IsHideAnimationRunning = true;
 
     public void HideWindow()
     {
+        App.Log($"[WidgetVisibility] HideWindow kind={_config.WidgetKind} id={_config.Id}");
+        App.LogVerbose(Environment.StackTrace);
         App.Current?.WidgetManager?.CancelWidgetSurfaceSwitch(_config.Id);
         TrayAnimation.Stop();
         TrayAnimation.RevealWindowForTrayShow();

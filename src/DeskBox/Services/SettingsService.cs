@@ -71,6 +71,7 @@ public sealed class SettingsService
     public const string WidgetMaterialTypeMica = Contracts.WidgetMaterialKinds.Mica;
     public const string WidgetMaterialTypeMicaAlt = Contracts.WidgetMaterialKinds.MicaAlt;
     public const string WidgetMaterialTypeAcrylic = Contracts.WidgetMaterialKinds.Acrylic;
+    public const string WidgetMaterialTypeGlass = Contracts.WidgetMaterialKinds.Glass;
     public const string WidgetMaterialTypeAcrylicBase = Contracts.WidgetMaterialKinds.AcrylicBase;
     public const string WidgetMaterialTypeSolid = Contracts.WidgetMaterialKinds.Solid;
     public const string WidgetBorderColorModeNeutral = Contracts.WidgetBorderKinds.ColorNeutral;
@@ -120,7 +121,7 @@ public sealed class SettingsService
         materialType is WidgetMaterialTypeMica or WidgetMaterialTypeMicaAlt;
 
     public static bool IsAcrylicMaterial(string? materialType) =>
-        materialType is WidgetMaterialTypeAcrylic or WidgetMaterialTypeAcrylicBase;
+        materialType is WidgetMaterialTypeGlass or WidgetMaterialTypeAcrylic or WidgetMaterialTypeAcrylicBase;
 
     public static bool SupportsWidgetOpacity(string? materialType) =>
         Contracts.WidgetMaterialKinds.SupportsOpacity(materialType);
@@ -1509,6 +1510,7 @@ settings.FocusClickedWidgetOnRaise = false;
         }
 
         if (settings.WidgetMaterialType is not (
+            WidgetMaterialTypeGlass or
             WidgetMaterialTypeMica or
             WidgetMaterialTypeMicaAlt or
             WidgetMaterialTypeAcrylic or

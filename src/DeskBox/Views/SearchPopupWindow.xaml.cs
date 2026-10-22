@@ -55,6 +55,7 @@ public sealed partial class SearchPopupWindow : Window
     private DispatcherTimer? _entranceGuardTimer;
     private AppWindow? _appWindow;
     private IntPtr _hwnd;
+    private readonly WindowCornerRegion _legacyCornerRegion = new();
 
     // Native backdrop controllers (same approach as desktop widgets).
     private MicaController? _micaController;
@@ -146,6 +147,13 @@ public sealed partial class SearchPopupWindow : Window
         _viewModel.OwnerWindowHandle = _hwnd;
         var windowId = Win32Interop.GetWindowIdFromWindow(_hwnd);
         _appWindow = AppWindow.GetFromWindowId(windowId);
+        _appWindow.Changed += (_, args) =>
+        {
+            if (args.DidSizeChange || args.DidPositionChange)
+            {
+                ApplyLegacyWindowCornerRegion();
+            }
+        };
 
         ConfigureWindow();
         ApplyTheme();
@@ -805,7 +813,7 @@ public sealed partial class SearchPopupWindow : Window
     }
 
     /// <summary>
-    /// Applies the native DWM corner style from the widget appearance settings.
+    /// Applies the window corner style from the widget appearance settings.
     /// </summary>
     private void ApplyWindowCornerPreference()
     {
@@ -818,9 +826,16 @@ public sealed partial class SearchPopupWindow : Window
             _ => Win32Helper.DWMWCP_ROUND
         };
 
-        Win32Helper.TrySetDwmWindowAttribute(
-            _hwnd, Win32Helper.DWMWA_WINDOW_CORNER_PREFERENCE,
-            ref cornerPreference);
+        if (WindowsCompatibilityService.SupportsNativeWindowCorners)
+        {
+            Win32Helper.TrySetDwmWindowAttribute(
+                _hwnd, Win32Helper.DWMWA_WINDOW_CORNER_PREFERENCE,
+                ref cornerPreference);
+        }
+        else
+        {
+            ApplyLegacyWindowCornerRegion();
+        }
 
         // Keep the XAML border overlay corner radius in sync with the native corner.
         PopupBorderOverlay.CornerRadius = cornerPreference switch
@@ -829,6 +844,17 @@ public sealed partial class SearchPopupWindow : Window
             Win32Helper.DWMWCP_ROUNDSMALL => new CornerRadius(4),
             _ => new CornerRadius(8)
         };
+    }
+
+    private void ApplyLegacyWindowCornerRegion()
+    {
+        if (!WindowsCompatibilityService.SupportsNativeWindowCorners)
+        {
+            string preference = WindowsCompatibilityService.ResolveEffectiveWidgetCornerPreference(
+                _settingsService.Settings.WidgetShell.WidgetCornerPreference);
+            _legacyCornerRegion.Apply(
+                _hwnd, WidgetCompactBoundsCalculator.ResolveOuterCornerRadius(preference));
+        }
     }
 
     private void ApplyMaterialFromSettings()

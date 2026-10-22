@@ -20,7 +20,9 @@ internal static class AppLifecycleRecoverySignalClassifier
     private const uint PbtResumeCritical = 0x0006;
     private const uint WtsSessionUnlock = 0x0008;
     private const uint WtsSessionLogon = 0x0005;
-    private const uint WtsSessionRemoteConnect = 0x0009;
+    private const uint WtsSessionConsoleConnect = 0x0001;
+    private const uint WtsSessionRemoteConnect = 0x0003;
+    private const uint WtsSessionDesktopReady = 0x000F;
 
     internal static string? ResolveRecoveryReason(
         uint message,
@@ -52,7 +54,8 @@ internal static class AppLifecycleRecoverySignalClassifier
         }
 
         if (message == WmWtsSessionChange &&
-            eventValue is WtsSessionUnlock or WtsSessionLogon or WtsSessionRemoteConnect)
+            eventValue is WtsSessionUnlock or WtsSessionLogon or WtsSessionConsoleConnect or
+                WtsSessionRemoteConnect or WtsSessionDesktopReady)
         {
             return eventValue == WtsSessionUnlock
                 ? "session-unlock"

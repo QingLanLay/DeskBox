@@ -106,7 +106,7 @@ public sealed class SolidColorBackdropTests
         Assert.Contains("WindowsCompatibilityService.IsWindows11OrLater", appearanceOptions, StringComparison.Ordinal);
         Assert.Contains("SettingsService.WidgetMaterialTypeSolid", appearanceOptions, StringComparison.Ordinal);
         Assert.Contains("IsOpen=\"{Binding Windows10Compatibility}\"", settingsWindow, StringComparison.Ordinal);
-        Assert.Contains("IsEnabled=\"{Binding NativeCornersSupported}\"", settingsWindow, StringComparison.Ordinal);
+        Assert.DoesNotContain("IsEnabled=\"{Binding NativeCornersSupported}\"", settingsWindow, StringComparison.Ordinal);
         Assert.Contains("ResolveWidgetMaterialType", backdrop, StringComparison.Ordinal);
         Assert.Contains("ApplyAcrylicController", backdrop, StringComparison.Ordinal);
         Assert.Contains("WindowsCompatibilityService.SupportsDesktopAcrylic", backdrop, StringComparison.Ordinal);

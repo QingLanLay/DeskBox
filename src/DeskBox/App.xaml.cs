@@ -1,4 +1,4 @@
-﻿// Copyright (c) DeskBox. All rights reserved.
+// Copyright (c) DeskBox. All rights reserved.
 
 using CommunityToolkit.Mvvm.Input;
 using DeskBox.Controls.WidgetContents;
@@ -1483,6 +1483,8 @@ public partial class App : Application
     }
 
     private AppDiagnosticsService? _diagnosticsService;
+    private DesktopShellRecoveryWatchdog? _desktopShellRecoveryWatchdog;
+    private bool _desktopShellRestartScheduled;
 
     private void InitializeLifecycleRecoveryWatcher()
     {
@@ -1500,7 +1502,15 @@ public partial class App : Application
                     trayHwnd,
                     UiDispatcherQueue,
                     OnLifecycleRecoveryRequested,
-                    FlushSettingsForEndSession);
+                    FlushSettingsForEndSession,
+                    OnDesktopSessionAvailabilityChanged);
+                _desktopShellRecoveryWatchdog = new DesktopShellRecoveryWatchdog(
+                    Win32Helper.IsInteractiveDesktopAvailable,
+                    DesktopShellWindowRecovery.Capture,
+                    DesktopShellWindowRecovery.Repair,
+                    OnDesktopLayerRecoverySuspended,
+                    () => UiDispatcherQueue.TryEnqueue(OnDesktopShellReady),
+                    () => UiDispatcherQueue.TryEnqueue(() => _ = RestartForDesktopShellRecoveryAsync()));
             }
         }
         catch (Exception ex)
@@ -1532,6 +1542,7 @@ public partial class App : Application
 
     private void OnLifecycleRecoveryRequested(string reason)
     {
+        _trayWindowGuard?.EnsureHidden();
         Log($"[Lifecycle] Recovery signal received: {reason}");
         _diagnosticsService?.RecordLifecycleEvent(reason);
         WidgetLayerService.InvalidateDesktopIconViewCache();
@@ -1545,6 +1556,7 @@ public partial class App : Application
             reason.Contains("display-power-on", StringComparison.OrdinalIgnoreCase);
         if (requiresExternalRecovery)
         {
+            _desktopShellRecoveryWatchdog?.RequestVerification();
             try
             {
                 GlobalHotkeyService?.RefreshRegistration();
@@ -1562,6 +1574,120 @@ public partial class App : Application
             {
                 _ = _everythingSearchService.RefreshConnectionAsync();
             }
+        }
+    }
+
+    private void OnDesktopSessionAvailabilityChanged(bool available)
+    {
+        _desktopShellRecoveryWatchdog?.SetSessionAvailable(available);
+        if (!available) OnDesktopLayerRecoverySuspended(true);
+    }
+
+    private void OnDesktopLayerRecoverySuspended(bool suspended)
+    {
+        // Gate attachment immediately, even if XAML is busy. Own-window owner
+        // changes stay on the UI thread to avoid cross-thread window-message locks.
+        WidgetLayerService.SetSessionRecoverySuspended(suspended);
+        void Detach()
+        {
+            if (!IsShuttingDown && WidgetLayerService.IsSessionRecoverySuspended)
+            {
+                WidgetLayerService.DetachDesktopOwnersForRecovery();
+            }
+        }
+        if (!suspended) return;
+        if (UiDispatcherQueue.HasThreadAccess) Detach();
+        else UiDispatcherQueue.TryEnqueue(Detach);
+    }
+
+    private async void OnDesktopShellReady()
+    {
+        if (IsShuttingDown || _desktopShellRecoveryWatchdog?.IsReady != true) return;
+        try
+        {
+            if (WidgetManager?.IsWidgetInteractionActive == true)
+            {
+                _desktopShellRecoveryWatchdog.RequestVerification();
+                return;
+            }
+            WidgetLayerService.InvalidateDesktopIconViewCache();
+            WidgetManager?.RefreshVisibleWidgetDesktopLayers("lifecycle-desktop-host-ready", recoverNativeVisibility: true);
+            RequestDisplayTopologyRestore("desktop-host-verified");
+            await Task.Delay(100);
+            if (IsShuttingDown || _desktopShellRecoveryWatchdog?.IsReady != true) return;
+            if (WidgetManager?.AreVisibleDesktopWindowsRecovered() == false)
+            {
+                Log("[DesktopRecovery] Widget native visibility/owner verification failed; retrying.");
+                _desktopShellRecoveryWatchdog.RequestVerification();
+                return;
+            }
+            Log("[DesktopRecovery] Desktop and widget native visibility/owners verified. Continuous monitoring remains active.");
+        }
+        catch (Exception ex)
+        {
+            Log($"[DesktopRecovery] Widget recovery failed: {ex}");
+            _desktopShellRecoveryWatchdog?.RequestVerification();
+        }
+    }
+
+    private async Task RestartForDesktopShellRecoveryAsync()
+    {
+        const string restartStampVariable = "DESKBOX_SHELL_RESTART_UTC_TICKS";
+        if (IsShuttingDown || _desktopShellRestartScheduled ||
+            _desktopShellRecoveryWatchdog?.IsReady != false ||
+            !Win32Helper.IsInteractiveDesktopAvailable() ||
+            WidgetManager?.IsWidgetInteractionActive == true ||
+            FileService.TransferSessions.ActiveSessionCount > 0)
+        {
+            return;
+        }
+
+        string? previousStamp = Environment.GetEnvironmentVariable(restartStampVariable);
+        long now = DateTime.UtcNow.Ticks;
+        if (long.TryParse(previousStamp, out long previous) &&
+            now - previous < TimeSpan.FromMinutes(10).Ticks)
+        {
+            // The detached updater and relaunched app inherit this stamp, so
+            // a stubborn external failure cannot cause a process restart loop.
+            return;
+        }
+
+        _desktopShellRestartScheduled = true;
+        try
+        {
+            // Give the last native placement request a complete verification
+            // window. A single healthy snapshot immediately after that request
+            // is not proof of recovery and must not cancel every restart.
+            await Task.Delay(1700);
+            if (!await SettingsService.FlushPendingSaveAsync(notifySubscribers: false))
+            {
+                _desktopShellRestartScheduled = false;
+                return;
+            }
+            if (_desktopShellRecoveryWatchdog?.IsReady != false || IsShuttingDown ||
+                !Win32Helper.IsInteractiveDesktopAvailable() ||
+                WidgetManager?.IsWidgetInteractionActive == true ||
+                FileService.TransferSessions.ActiveSessionCount > 0)
+            {
+                _desktopShellRestartScheduled = false;
+                return;
+            }
+            Environment.SetEnvironmentVariable(restartStampVariable, now.ToString(System.Globalization.CultureInfo.InvariantCulture));
+            AppRelaunchScheduleResult relaunch = AppRelaunchService.ScheduleAfterCurrentProcessExit();
+            if (!relaunch.Started)
+            {
+                Environment.SetEnvironmentVariable(restartStampVariable, previousStamp);
+                _desktopShellRestartScheduled = false;
+                Log($"[DesktopRecovery] Controlled restart could not be scheduled: {relaunch.ErrorMessage}");
+                return;
+            }
+            Log("[DesktopRecovery] Native restore remained unhealthy for 15 seconds; restarting DeskBox after saving settings.");
+            await ShutdownForRestartAsync();
+        }
+        catch (Exception ex)
+        {
+            _desktopShellRestartScheduled = false;
+            Log($"[DesktopRecovery] Controlled restart failed: {ex}");
         }
     }
 
@@ -4619,6 +4745,8 @@ public partial class App : Application
             ShutdownStep.Sync("display-watcher", () => { _displayAreaWatcher?.Dispose(); _displayAreaWatcher = null; }),
             ShutdownStep.Sync("display-transition", () => { _displayTopologyTransitionCoordinator?.Dispose(); _displayTopologyTransitionCoordinator = null; }),
             ShutdownStep.Sync("lifecycle-watcher", () => { _lifecycleRecoveryWatcher?.Dispose(); _lifecycleRecoveryWatcher = null; }),
+            ShutdownStep.Sync("tray-window-guard", () => { _trayWindowGuard?.Dispose(); _trayWindowGuard = null; }),
+            ShutdownStep.Sync("desktop-shell-watchdog", () => { _desktopShellRecoveryWatchdog?.Dispose(); _desktopShellRecoveryWatchdog = null; }),
             ShutdownStep.Sync("hook-watchdog", () => { _hookHealthWatchdog?.Dispose(); _hookHealthWatchdog = null; }),
             ShutdownStep.Sync("diagnostics", () => { _diagnosticsService?.Dispose(); _diagnosticsService = null; }),
             ShutdownStep.Bounded("quick-capture", () =>

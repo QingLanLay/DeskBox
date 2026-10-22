@@ -3901,7 +3901,7 @@ public abstract partial class WidgetWindowBase
         Action? committed = null,
         Action? commitFailed = null)
     {
-        uint flags = Win32Helper.SWP_NOZORDER | Win32Helper.SWP_NOACTIVATE;
+        uint flags = Win32Helper.SWP_NOZORDER | Win32Helper.SWP_NOACTIVATE | Win32Helper.SWP_NOOWNERZORDER;
         if (suppressRedraw)
         {
             // During the per-frame morph the swapchain already holds the

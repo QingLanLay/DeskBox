@@ -56,7 +56,8 @@ public sealed partial class FileSurfaceContent
         {
             listView.Focus(FocusState.Programmatic);
         }
-        else
+        else if (!WidgetLayerService.UsesDesktopPinnedMode() ||
+                 Win32Helper.GetForegroundWindow() == _hostWindowHandle)
         {
             Root.Focus(FocusState.Programmatic);
         }

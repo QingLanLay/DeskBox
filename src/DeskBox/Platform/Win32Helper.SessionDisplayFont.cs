@@ -20,6 +20,65 @@ public static partial class Win32Helper
     [return: MarshalAs(UnmanagedType.Bool)]
     internal static extern bool WTSUnRegisterSessionNotification(IntPtr hWnd);
 
+    [DllImport("user32.dll", SetLastError = true)]
+    private static extern IntPtr OpenInputDesktop(uint flags, [MarshalAs(UnmanagedType.Bool)] bool inherit, uint access);
+
+    [DllImport("user32.dll")]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static extern bool CloseDesktop(IntPtr desktop);
+
+    [DllImport("user32.dll", EntryPoint = "GetUserObjectInformationW", CharSet = CharSet.Unicode)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static extern bool GetUserObjectInformation(IntPtr handle, int index,
+        System.Text.StringBuilder information, uint length, out uint needed);
+
+    internal static bool IsInteractiveDesktopAvailable()
+    {
+        IntPtr desktop = OpenInputDesktop(0, false, 0x0001); // DESKTOP_READOBJECTS
+        if (desktop == IntPtr.Zero)
+        {
+            return false;
+        }
+
+        try
+        {
+            var name = new System.Text.StringBuilder(256);
+            return GetUserObjectInformation(desktop, 2, name, (uint)(name.Capacity * sizeof(char)), out _) &&
+                string.Equals(name.ToString(), "Default", StringComparison.OrdinalIgnoreCase);
+        }
+        finally
+        {
+            CloseDesktop(desktop);
+        }
+    }
+
+    [LibraryImport("user32.dll")]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    internal static partial bool IsIconic(IntPtr window);
+
+    [LibraryImport("user32.dll", SetLastError = true)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    internal static partial bool ShowWindowAsync(IntPtr window, int command);
+
+    [StructLayout(LayoutKind.Sequential)]
+    internal struct WindowPlacement
+    {
+        internal uint Length;
+        internal uint Flags;
+        internal uint ShowCommand;
+        internal POINT MinPosition;
+        internal POINT MaxPosition;
+        internal RECT NormalPosition;
+    }
+
+    [LibraryImport("user32.dll")]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    internal static partial bool GetWindowPlacement(IntPtr window, ref WindowPlacement placement);
+
+    [LibraryImport("user32.dll", SetLastError = true)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    internal static partial bool SetWindowPlacement(IntPtr window, in WindowPlacement placement);
+
     // ── user32: display device identity ─────────────────────────────
 
     [DllImport("user32.dll", EntryPoint = "EnumDisplayDevicesW", CharSet = CharSet.Unicode)]

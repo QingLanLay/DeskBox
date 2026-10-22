@@ -344,6 +344,16 @@ public sealed class AppearanceSettingsEditorTests : IDisposable
     }
 
     [Fact]
+    public void CornerOptions_DisplayNamesMatchTheirValues()
+    {
+        (_, AppearanceSettingsViewModel editor) = CreateEditor(_root);
+        foreach (SettingsOption option in editor.AvailableCornerPreferenceOptions)
+        {
+            Assert.Equal($"Settings.Corner.{option.Value}", option.DisplayName);
+        }
+    }
+
+    [Fact]
     public void HostEnvironmentPush_GatesTheMaterialOptionsAndCorners()
     {
         (_, AppearanceSettingsViewModel editor) = CreateEditor(_root);
@@ -534,7 +544,7 @@ public sealed class AppearanceSettingsEditorTests : IDisposable
         Assert.Contains("Value=\"{Binding TextSize, Mode=TwoWay}\"", window);
         Assert.Contains("Visibility=\"{Binding ShowOpacitySlider, Converter={StaticResource SettingsBoolToVisibilityConverter}}\"", window);
         Assert.Contains("IsOpen=\"{Binding Windows10Compatibility}\"", window);
-        Assert.Contains("IsEnabled=\"{Binding NativeCornersSupported}\"", window);
+        Assert.DoesNotContain("IsEnabled=\"{Binding NativeCornersSupported}\"", window);
 
         // The legacy shell paths are gone from the appearance family.
         Assert.DoesNotContain("{Binding SelectedTheme", section + window);

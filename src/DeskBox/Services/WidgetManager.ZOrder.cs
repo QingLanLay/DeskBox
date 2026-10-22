@@ -425,7 +425,7 @@ public sealed partial class WidgetManager
             return false;
         }
 
-        if (_widgetsRaisedFromTray ||
+        if (WidgetLayerService.IsSessionRecoverySuspended || _widgetsRaisedFromTray ||
             _isTogglingWidgetsDesktopLayer ||
             _sessionManager.IsInteractionActive ||
             HasActiveExpandedWidgetLayerLease())
@@ -523,7 +523,7 @@ public sealed partial class WidgetManager
             dropShadowEnabled = true;
         }
 
-        if (_widgetsRaisedFromTray ||
+        if (WidgetLayerService.IsSessionRecoverySuspended || _widgetsRaisedFromTray ||
             _isTogglingWidgetsDesktopLayer ||
             _sessionManager.IsInteractionActive ||
             _sessionManager.State == WidgetSessionState.Hidden ||

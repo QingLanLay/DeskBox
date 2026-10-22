@@ -2486,19 +2486,20 @@ public static class IconHelper
         }
 
         string extension = Path.GetExtension(resolvedPath);
-        if (string.IsNullOrWhiteSpace(extension))
-        {
-            return $"{sourceCachePrefix}path:{resolvedPath}";
-        }
-
         if (extension.Equals(".exe", StringComparison.OrdinalIgnoreCase) ||
             extension.Equals(".ico", StringComparison.OrdinalIgnoreCase) ||
+            iconSource.UsesExplicitIconIndex ||
             ShortcutHelper.IsShortcutPath(sourcePath))
         {
             string sourceVersion = ShortcutHelper.IsShortcutPath(sourcePath)
                 ? GetFileIconVersion(sourcePath)
                 : "source";
             return $"{sourceCachePrefix}path:{resolvedPath}:{iconSource.IconIndex}:{iconSource.UsesExplicitIconIndex}:{iconSource.UsesShellItemIcon}:{GetFileIconVersion(resolvedPath)}:{sourceVersion}";
+        }
+
+        if (string.IsNullOrWhiteSpace(extension))
+        {
+            return $"{sourceCachePrefix}path:{resolvedPath}";
         }
 
         // Generic file-type icons remain shared across every file with the same
