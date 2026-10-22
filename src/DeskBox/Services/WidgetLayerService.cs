@@ -476,6 +476,92 @@ public static class WidgetLayerService
             flags);
     }
 
+    internal static void ConstrainDesktopPinnedWindowPosition(
+        IntPtr windowHandle,
+        IntPtr positionPointer,
+        Func<IntPtr, bool>? isWidgetWindow = null)
+    {
+        if (positionPointer == IntPtr.Zero || !Win32Helper.IsWindow(windowHandle))
+        {
+            return;
+        }
+
+        var position = Marshal.PtrToStructure<DesktopWindowPosition>(positionPointer);
+        if ((position.Flags & Win32Helper.SWP_NOZORDER) != 0)
+        {
+            return;
+        }
+
+        isWidgetWindow ??= IsDesktopWidgetWindow;
+        IntPtr boundary = FindDesktopPeerRaiseBoundary(windowHandle, isWidgetWindow);
+        IntPtr requested = position.InsertAfter;
+        // Preserve deliberate sibling ordering, including expanded capsules,
+        // only when that sibling is already behind every application.
+        bool safePeer = requested != windowHandle && Win32Helper.IsWindow(requested) &&
+            isWidgetWindow(requested) && IsBelowDesktopPeerBoundary(requested, boundary) &&
+            IsAboveDesktopShellHosts(requested);
+        position.InsertAfter = safePeer ? requested : boundary;
+        position.Flags |= Win32Helper.SWP_NOACTIVATE | Win32Helper.SWP_NOOWNERZORDER;
+        Marshal.StructureToPtr(position, positionPointer, false);
+    }
+
+    internal static bool RepairDesktopPinnedWindowOrder(
+        IReadOnlyList<IntPtr> windowHandles)
+    {
+        HashSet<IntPtr> peers = windowHandles
+            .Where(handle => Win32Helper.IsWindow(handle) && Win32Helper.IsWindowVisible(handle))
+            .ToHashSet();
+        if (peers.Count == 0)
+        {
+            return false;
+        }
+
+        IntPtr highest = FindHighestPeer(peers);
+        IntPtr boundary = FindDesktopPeerRaiseBoundary(highest, peers.Contains);
+        // Retain the current native sibling order rather than imposing the
+        // resting shadow order over an expanded or actively focused widget.
+        var ordered = new List<IntPtr>(peers.Count);
+        IntPtr cursor = Win32Helper.GetWindow(highest, Win32Helper.GW_HWNDFIRST);
+        while (cursor != IntPtr.Zero)
+        {
+            if (peers.Contains(cursor)) ordered.Add(cursor);
+            cursor = Win32Helper.GetWindow(cursor, Win32Helper.GW_HWNDNEXT);
+        }
+
+        if (ordered.Count == 0 ||
+            peers.All(handle => !Win32Helper.IsWindowTopMost(handle)) &&
+            IsBelowDesktopPeerBoundary(highest, boundary) &&
+            IsAboveDesktopShellHosts(ordered[^1]))
+        {
+            return false;
+        }
+
+        // Windows can reverse a mixed topmost/normal deferred group while
+        // demoting it. Remove topmost behind the application boundary first,
+        // then order the now-normal peers together.
+        bool demoted = true;
+        foreach (IntPtr handle in ordered.Where(Win32Helper.IsWindowTopMost))
+        {
+            demoted &= Win32Helper.SetWindowPos(handle, boundary, 0, 0, 0, 0,
+                Win32Helper.WindowLayerPositionFlags);
+        }
+        if (boundary == Win32Helper.HWND_NOTOPMOST) boundary = Win32Helper.HWND_TOP;
+
+        return ApplyWindowOrderHighestToLowest(ordered, boundary, "desktop-pinned-layer-repair") && demoted;
+    }
+
+    [StructLayout(LayoutKind.Sequential)]
+    private struct DesktopWindowPosition
+    {
+        public IntPtr Window;
+        public IntPtr InsertAfter;
+        public int X;
+        public int Y;
+        public int Width;
+        public int Height;
+        public uint Flags;
+    }
+
     private static IntPtr FindDesktopPeerRaiseBoundary(
         IntPtr windowHandle,
         Func<IntPtr, bool> isWidgetWindow)
@@ -483,16 +569,14 @@ public static class WidgetLayerService
         IntPtr boundary = Win32Helper.IsWindowTopMost(windowHandle)
             ? Win32Helper.HWND_NOTOPMOST
             : Win32Helper.HWND_TOP;
+        IntPtr desktopHost = DesktopShellWindowRecovery.GetValidatedOwner(FindDesktopIconView());
         IntPtr current = Win32Helper.GetWindow(windowHandle, Win32Helper.GW_HWNDFIRST);
         while (current != IntPtr.Zero)
         {
-            // Windows can leave minimized and cloaked HWNDs behind the desktop.
-            // Never use that lower region, or the taskbar's changing Z-order
-            // band, as an application boundary for a desktop widget.
-            if (IsDesktopShellHost(current) && IsRenderedWindow(current))
-            {
-                break;
-            }
+            // Only Explorer's validated icon host bounds the desktop. Other
+            // WorkerW windows can precede applications; minimized/cloaked and
+            // off-desktop HWNDs below the real icon host are not boundaries.
+            if (current == desktopHost && IsRenderedWindow(current)) break;
 
             if (current != windowHandle &&
                 IsRenderedWindow(current) &&

@@ -78,6 +78,8 @@ public sealed class WidgetZOrderRestoreContractTests
             "// ── Bounds management");
 
         Assert.Contains("SetWindowSubclass", setup, StringComparison.Ordinal);
+        Assert.Contains("ConstrainDesktopPinnedWindowPosition", callback, StringComparison.Ordinal);
+        Assert.Contains("IsSessionRecoverySuspended", callback, StringComparison.Ordinal);
         Assert.Contains("Win32Helper.WM_MOUSEACTIVATE", callback, StringComparison.Ordinal);
         Assert.Contains("Win32Helper.WM_POINTERACTIVATE", callback, StringComparison.Ordinal);
         Assert.Contains("WidgetLayerService.ShouldSuppressPointerActivation", callback, StringComparison.Ordinal);

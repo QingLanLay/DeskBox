@@ -564,6 +564,7 @@ public sealed partial class WidgetManager
         _settingsService.SettingsChanged += OnSettingsChanged;
         _settingsService.AppearancePreviewChanged += ApplyAppearancePreview;
         _themeService.AppearanceChanged += ApplyAppearancePreview;
+        UpdateDesktopPinnedLayerMonitor();
         App.Log(
             $"[WidgetManager] Standalone file host strategy=UnifiedContentOnly " +
             $"legacyFallbackAvailable=false fallbackRequests={_fileWidgetHostDiagnostics.FallbackRequestCount} " +
@@ -744,6 +745,7 @@ public sealed partial class WidgetManager
 
         string previousMode = _lastWidgetLayerMode;
         _lastWidgetLayerMode = layerMode;
+        UpdateDesktopPinnedLayerMonitor();
         WidgetLayerService.InvalidateDesktopIconViewCache();
         App.Log($"[WidgetManager] Widget layer mode changed {previousMode}->{layerMode}");
         if (string.Equals(layerMode, SettingsService.WidgetLayerModeQuickReveal, StringComparison.Ordinal))
@@ -2283,6 +2285,7 @@ public sealed partial class WidgetManager
     /// </summary>
     public void CloseAll()
     {
+        StopDesktopPinnedLayerMonitor();
         CancelAllWidgetSurfaceSwitches();
         StopTrayLayerRestoreMonitor();
         DisposeWidgetDetachPlacementPreview();

@@ -408,6 +408,13 @@ public abstract partial class WidgetWindowBase
         UIntPtr subclassId,
         UIntPtr referenceData)
     {
+        if (message == 0x0046 && // WM_WINDOWPOSCHANGING
+            WidgetLayerService.UsesDesktopPinnedMode() &&
+            !WidgetLayerService.IsSessionRecoverySuspended)
+        {
+            WidgetLayerService.ConstrainDesktopPinnedWindowPosition(HWnd, lParam);
+        }
+
         if ((message == Win32Helper.WM_MOUSEACTIVATE || message == Win32Helper.WM_POINTERACTIVATE) &&
             WidgetLayerService.ShouldSuppressPointerActivation(HWnd))
         {

@@ -108,6 +108,86 @@ public sealed class DesktopWidgetNativeLayerTests
         Assert.Equal(foreground, Win32Helper.GetForegroundWindow());
     }
 
+    [Theory]
+    [InlineData(0)]
+    [InlineData(-1)]
+    [InlineData(-2)]
+    public void NativePositionGuard_PreventsApplicationOvertakeBeforeItIsPainted(int requestedBand)
+    {
+        using var application = new TestWindow();
+        using var peer = new TestWindow();
+        using var widget = new TestWindow();
+        application.PlaceAfter(Win32Helper.HWND_TOP);
+        peer.PlaceAfter(application.Handle);
+        widget.PlaceAfter(peer.Handle);
+        IntPtr foreground = Win32Helper.GetForegroundWindow();
+        var observedAboveApplication = new List<bool>();
+        int guardedRequests = 0;
+        Win32Helper.SubclassProc guard = (window, message, wParam, lParam, id, data) =>
+        {
+            if (message == 0x0046)
+            {
+                guardedRequests++;
+                WidgetLayerService.ConstrainDesktopPinnedWindowPosition(window, lParam,
+                    handle => handle == peer.Handle || handle == widget.Handle);
+            }
+            if (message == 0x0047)
+            {
+                observedAboveApplication.Add(IsAbove(window, application.Handle));
+            }
+            return Win32Helper.DefSubclassProc(window, message, wParam, lParam);
+        };
+        Assert.True(Win32Helper.SetWindowSubclass(widget.Handle, guard, new UIntPtr(2), UIntPtr.Zero));
+        try
+        {
+            widget.PlaceAfter(new IntPtr(requestedBand));
+
+            Assert.True(guardedRequests > 0);
+            Assert.All(observedAboveApplication, above => Assert.False(above));
+            Assert.False(Win32Helper.IsWindowTopMost(widget.Handle));
+            Assert.True(IsAbove(application.Handle, widget.Handle));
+            Assert.True(IsAbove(widget.Handle, FindHighestDesktopHost()));
+            Assert.Equal(foreground, Win32Helper.GetForegroundWindow());
+
+            widget.PlaceAfter(peer.Handle);
+            Assert.True(IsAbove(peer.Handle, widget.Handle));
+            Assert.True(IsAbove(application.Handle, peer.Handle));
+        }
+        finally
+        {
+            Win32Helper.RemoveWindowSubclass(widget.Handle, guard, new UIntPtr(2));
+            GC.KeepAlive(guard);
+        }
+    }
+
+    [Fact]
+    public void DesktopLayerRepair_RestoresDriftedPeersWithoutShowingHiddenWindowsOrReorderingAgain()
+    {
+        using var application = new TestWindow();
+        using var expanded = new TestWindow();
+        using var peer = new TestWindow();
+        using var hidden = new TestWindow();
+        Win32Helper.ShowWindow(hidden.Handle, Win32Helper.SW_HIDE);
+        application.PlaceAfter(Win32Helper.HWND_TOP);
+        peer.PlaceAfter(Win32Helper.HWND_TOPMOST);
+        expanded.PlaceAfter(Win32Helper.HWND_TOPMOST);
+        peer.PlaceAfter(expanded.Handle);
+        Assert.True(IsAbove(expanded.Handle, peer.Handle));
+        IntPtr foreground = Win32Helper.GetForegroundWindow();
+        IntPtr[] handles = [peer.Handle, expanded.Handle, hidden.Handle];
+
+        Assert.True(WidgetLayerService.RepairDesktopPinnedWindowOrder(handles));
+
+        Assert.True(IsAbove(application.Handle, expanded.Handle));
+        Assert.True(IsAbove(expanded.Handle, peer.Handle));
+        Assert.True(IsAbove(peer.Handle, FindHighestDesktopHost()));
+        Assert.False(Win32Helper.IsWindowTopMost(expanded.Handle));
+        Assert.False(Win32Helper.IsWindowTopMost(peer.Handle));
+        Assert.False(Win32Helper.IsWindowVisible(hidden.Handle));
+        Assert.Equal(foreground, Win32Helper.GetForegroundWindow());
+        Assert.False(WidgetLayerService.RepairDesktopPinnedWindowOrder(handles));
+    }
+
     private static IntPtr FindHighestDesktopHost()
     {
         IntPtr host = IntPtr.Zero;
