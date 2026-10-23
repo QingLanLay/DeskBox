@@ -1083,7 +1083,8 @@ public partial class App : Application
             {
                 WidgetManager = new WidgetManager(SettingsService, FileService, OrganizerService,
                     themeService, quickCaptureService, localizationService, _todoSettings,
-                    _quickCaptureSettings, _searchSettings);
+                    _quickCaptureSettings, _searchSettings,
+                    desktopPinnedLayerDispatcherQueue: UiDispatcherQueue);
                 WidgetManager.TrayLayerStateChanged += UpdateTrayLayerStateText;
                 // Lets a quick-reveal raise promote already-open DeskBox surfaces
                 // (search popup, settings, desktop organization) above the raised
@@ -1098,7 +1099,9 @@ public partial class App : Application
             {
                 DesktopDoubleClickActivationService = new DesktopDoubleClickActivationService(
                     SettingsService,
-                    ToggleWidgetsFromDesktopDoubleClickAsync);
+                    ToggleWidgetsFromDesktopDoubleClickAsync,
+                    eventTime => UiDispatcherQueue.TryEnqueue(() =>
+                        WidgetManager?.DismissFileSelectionsOnOutsideClick(eventTime)));
                 DesktopDoubleClickActivationService.RefreshRegistration();
             });
             RunOptionalStartupStep("display-topology-coordinator", () =>

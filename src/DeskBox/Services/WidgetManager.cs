@@ -480,7 +480,8 @@ public sealed partial class WidgetManager
         LocalizationService? localizationService = null,
         TodoSettingsCoordinator? todoSettings = null,
         IQuickCaptureSettings? quickCaptureSettings = null,
-        ISearchFeatureSettings? searchFeatureSettings = null)
+        ISearchFeatureSettings? searchFeatureSettings = null,
+        DispatcherQueue? desktopPinnedLayerDispatcherQueue = null)
         : this(
             settingsService,
             fileService,
@@ -492,7 +493,8 @@ public sealed partial class WidgetManager
             recycleManagedFolderDeletes: true,
             todoSettings,
             quickCaptureSettings,
-            searchFeatureSettings)
+            searchFeatureSettings,
+            desktopPinnedLayerDispatcherQueue)
     {
     }
 
@@ -527,9 +529,11 @@ public sealed partial class WidgetManager
         bool recycleManagedFolderDeletes,
         TodoSettingsCoordinator? todoSettings = null,
         IQuickCaptureSettings? quickCaptureSettings = null,
-        ISearchFeatureSettings? searchFeatureSettings = null)
+        ISearchFeatureSettings? searchFeatureSettings = null,
+        DispatcherQueue? desktopPinnedLayerDispatcherQueue = null)
     {
         _settingsService = settingsService;
+        _desktopPinnedLayerDispatcherQueue = desktopPinnedLayerDispatcherQueue;
         _fileSessionRegistration = new(_fileWidgets,
             session => session.Host, session => session.Content);
         _contentWindowRegistration = new(_contentWidgets, _widgetWindowHandles,
@@ -1926,6 +1930,18 @@ public sealed partial class WidgetManager
     public void RemoveWidget(string widgetId)
     {
         _ = RemoveWidgetAsync(widgetId);
+    }
+
+    internal void DismissFileSelectionsOnOutsideClick(uint eventTime)
+    {
+        foreach (FileWidgetContentAdapter content in _fileWidgets.Values
+                     .Select(session => session.Content)
+                     .Concat(_contentWidgets.Values.Select(window => window.CurrentContent)
+                         .OfType<FileWidgetContentAdapter>())
+                     .Distinct())
+        {
+            content.DismissSelectionOnOutsideClick(eventTime);
+        }
     }
 
     public void ClearSelectionsExcept(string activeWidgetId)

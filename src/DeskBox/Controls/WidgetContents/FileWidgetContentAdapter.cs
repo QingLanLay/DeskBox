@@ -270,6 +270,11 @@ public sealed class FileWidgetContentAdapter :
         Surface?.ClearItemSelection();
     }
 
+    internal void DismissSelectionOnOutsideClick(uint eventTime)
+    {
+        Surface?.DismissSelectionOnOutsideClick(eventTime);
+    }
+
     internal Task ApplyFolderOpenBehaviorChangeAsync()
     {
         return Surface is { } content

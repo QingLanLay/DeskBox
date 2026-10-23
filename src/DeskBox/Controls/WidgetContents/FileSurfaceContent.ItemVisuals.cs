@@ -138,6 +138,7 @@ public sealed partial class FileSurfaceContent
         }
 
         ListViewBase listView = GetActiveItemsView();
+        RestoreDismissedItemFocusVisual(listView.ContainerFromItem(item) as SelectorItem, "PointerFocused");
         _pendingPointerDragItems = listView.SelectedItems.Contains(item)
             ? listView.SelectedItems
                 .OfType<WidgetItem>()

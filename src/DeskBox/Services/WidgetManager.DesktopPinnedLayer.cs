@@ -5,17 +5,18 @@ namespace DeskBox.Services;
 
 public sealed partial class WidgetManager
 {
+    private readonly DispatcherQueue? _desktopPinnedLayerDispatcherQueue;
     private DispatcherQueueTimer? _desktopPinnedLayerTimer;
 
     private void UpdateDesktopPinnedLayerMonitor()
     {
         StopDesktopPinnedLayerMonitor();
-        if (!WidgetLayerService.UsesDesktopPinnedMode() || App.UiDispatcherQueue is null)
+        if (!WidgetLayerService.UsesDesktopPinnedMode() || _desktopPinnedLayerDispatcherQueue is null)
         {
             return;
         }
 
-        _desktopPinnedLayerTimer = App.UiDispatcherQueue.CreateTimer();
+        _desktopPinnedLayerTimer = _desktopPinnedLayerDispatcherQueue.CreateTimer();
         _desktopPinnedLayerTimer.Interval = TimeSpan.FromSeconds(1);
         _desktopPinnedLayerTimer.IsRepeating = true;
         _desktopPinnedLayerTimer.Tick += DesktopPinnedLayerTimer_Tick;

@@ -486,12 +486,7 @@ public sealed partial class FileSurfaceContent :
         // and title editing, an inline item rename, or an outbound drag all
         // read the current selection and must not observe a surprise reset
         // triggered by their own window activations.
-        if (IsStackPopoverInteractionActive ||
-            _stackPopoverDragActive ||
-            _stackPopoverTitleEditing ||
-            IsStackPopoverItemRenameEditing ||
-            _itemRenameTarget is not null ||
-            _pendingPointerDragItems.Length > 0)
+        if (IsFileSelectionInteractionActive())
         {
             return;
         }
@@ -500,11 +495,13 @@ public sealed partial class FileSurfaceContent :
             ItemsList.SelectedItems.Count == 0 &&
             !_isBoxSelecting)
         {
+            DismissItemFocusVisual();
             return;
         }
 
         ResetBoxSelectionState();
         ClearItemSelection();
+        DismissItemFocusVisual();
     }
 
     internal object? CaptureTransientState()
@@ -4659,6 +4656,7 @@ public sealed partial class FileSurfaceContent :
 
     private async void Root_KeyDown(object sender, KeyRoutedEventArgs e)
     {
+        RestoreDismissedItemFocusVisual(_dismissedItemFocusContainer, "Focused");
         if (await TryHandleClipboardShortcutAsync(e))
         {
             return;
@@ -5031,6 +5029,7 @@ public sealed partial class FileSurfaceContent :
         object sender,
         SelectionChangedEventArgs e)
     {
+        _lastItemSelectionChangedTime = unchecked((uint)Environment.TickCount);
         if (_isSynchronizingSelection)
         {
             return;

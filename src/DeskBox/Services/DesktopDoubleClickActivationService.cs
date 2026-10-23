@@ -21,6 +21,7 @@ public sealed class DesktopDoubleClickActivationService : IDisposable, IHookHeal
     private readonly object _stateMachineSync = new();
     private readonly SettingsService _settingsService;
     private readonly Func<DesktopDoubleClickSequence, Task> _invokeAsync;
+    private readonly Action<uint>? _outsidePointerPressed;
     private readonly Win32Helper.LowLevelMouseProc _mouseHookProc;
     private readonly DesktopDoubleClickStateMachine _stateMachine;
     private readonly ConcurrentQueue<QueuedMouseDown> _queuedMouseDowns = new();
@@ -45,10 +46,12 @@ public sealed class DesktopDoubleClickActivationService : IDisposable, IHookHeal
 
     internal DesktopDoubleClickActivationService(
         SettingsService settingsService,
-        Func<DesktopDoubleClickSequence, Task> invokeAsync)
+        Func<DesktopDoubleClickSequence, Task> invokeAsync,
+        Action<uint>? outsidePointerPressed = null)
     {
         _settingsService = settingsService;
         _invokeAsync = invokeAsync;
+        _outsidePointerPressed = outsidePointerPressed;
         _mouseHookProc = MouseHookProc;
         _diagnosticsEnabled = string.Equals(
             Environment.GetEnvironmentVariable("DESKBOX_DESKTOP_DOUBLE_CLICK_DIAGNOSTICS"),
@@ -118,8 +121,13 @@ public sealed class DesktopDoubleClickActivationService : IDisposable, IHookHeal
 
     string IHookHealthProbeTarget.ProbeName => "desktop-double-click";
 
+    // The same passive hook also ends file selections after an outside click.
+    // Disabling the double-click gesture must not disable selection dismissal.
+    private bool IsInputObservationEnabled =>
+        _outsidePointerPressed is not null || _settingsService.Settings.DesktopDoubleClickEnabled;
+
     bool IHookHealthProbeTarget.HookProbeWanted =>
-        _settingsService.Settings.DesktopDoubleClickEnabled && !_disposed;
+        IsInputObservationEnabled && !_disposed;
 
     bool IHookHealthProbeTarget.HookConfirmedDead => !IsActive;
 
@@ -136,7 +144,7 @@ public sealed class DesktopDoubleClickActivationService : IDisposable, IHookHeal
         bool previous = _settingsService.Settings.DesktopDoubleClickEnabled;
         if (previous == enabled)
         {
-            if (!enabled || IsActive || TryStart(out errorCode))
+            if (!IsInputObservationEnabled || IsActive || TryStart(out errorCode))
             {
                 return true;
             }
@@ -145,13 +153,13 @@ public sealed class DesktopDoubleClickActivationService : IDisposable, IHookHeal
         }
 
         _settingsService.Settings.DesktopDoubleClickEnabled = enabled;
-        if (enabled && !TryStart(out errorCode))
+        if (IsInputObservationEnabled && !TryStart(out errorCode))
         {
             _settingsService.Settings.DesktopDoubleClickEnabled = previous;
             return false;
         }
 
-        if (!enabled)
+        if (!IsInputObservationEnabled)
         {
             Stop();
         }
@@ -163,7 +171,7 @@ public sealed class DesktopDoubleClickActivationService : IDisposable, IHookHeal
     public void RefreshRegistration()
     {
         Stop();
-        if (!_settingsService.Settings.DesktopDoubleClickEnabled)
+        if (!IsInputObservationEnabled)
         {
             return;
         }
@@ -480,6 +488,12 @@ public sealed class DesktopDoubleClickActivationService : IDisposable, IHookHeal
             return;
         }
 
+        NotifyOutsidePointerPressed(sample);
+        if (!_settingsService.Settings.DesktopDoubleClickEnabled)
+        {
+            return;
+        }
+
         // Explorer's list-view hit test may perform cross-process memory IO and
         // wait for Explorer. It must never run inside LowLevelMouseProc because
         // Windows serializes that callback with the global input path.
@@ -523,6 +537,43 @@ public sealed class DesktopDoubleClickActivationService : IDisposable, IHookHeal
         if (!App.UiDispatcherQueue.TryEnqueue(() => _ = InvokeAsync(sequence)))
         {
             Interlocked.Increment(ref _dispatchFailureCount);
+        }
+    }
+
+    private void NotifyOutsidePointerPressed(QueuedMouseDown sample)
+    {
+        if (_outsidePointerPressed is null)
+        {
+            return;
+        }
+
+        // Read-only hit testing runs on the drain worker, never on the global
+        // input callback. Our child windows and flyouts belong to this process
+        // too, so interacting with a menu does not dismiss its file selection.
+        IntPtr target = Win32Helper.WindowFromPoint(sample.Data.pt);
+        if (target == IntPtr.Zero)
+        {
+            return;
+        }
+
+        Win32Helper.GetWindowThreadProcessId(target, out uint processId);
+        if (processId == 0 || processId == (uint)Environment.ProcessId)
+        {
+            return;
+        }
+
+        if (!IsGenerationActive(sample.Generation))
+        {
+            return;
+        }
+
+        try
+        {
+            _outsidePointerPressed(sample.Data.time);
+        }
+        catch (Exception ex)
+        {
+            App.Log($"[FileSelection] Outside-click dismissal failed: {ex.Message}");
         }
     }
 
