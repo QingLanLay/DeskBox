@@ -73,7 +73,7 @@ public sealed class AotStage4E4ContractTests
             1,
             CountOccurrences(
                 xaml,
-                "{x:Bind FileStack.StacksEnabled, Mode=TwoWay}"));
+                "controls:SettingsComboBox.Value=\"{x:Bind FileStack.OpenMode, Mode=TwoWay}\""));
         Assert.Equal(
             1,
             CountOccurrences(
@@ -89,7 +89,7 @@ public sealed class AotStage4E4ContractTests
 
         Assert.DoesNotContain("{Binding ", xaml, StringComparison.Ordinal);
         Assert.DoesNotContain("{x:Bind ViewModel.", xaml, StringComparison.Ordinal);
-        Assert.Equal(5, CountOccurrences(xaml, "{x:Bind "));
+        Assert.Equal(6, CountOccurrences(xaml, "{x:Bind "));
     }
 
     [Fact]
@@ -131,7 +131,7 @@ public sealed class AotStage4E4ContractTests
             "src/DeskBox/Features/Interaction/InteractionSettingsViewModel.cs");
 
         Assert.Contains("OnPropertyChanged(nameof(SettingsSummaryText));", fileStack, StringComparison.Ordinal);
-        Assert.Contains("SetProperty(ref _stacksEnabled", fileStack, StringComparison.Ordinal);
+        Assert.Contains("SetProperty(ref _autoStacking", fileStack, StringComparison.Ordinal);
         Assert.Contains("SetProperty(", featureWidgets, StringComparison.Ordinal);
         Assert.Contains("_folderOpenBehavior", featureWidgets, StringComparison.Ordinal);
         Assert.Contains(
@@ -186,7 +186,7 @@ public sealed class AotStage4E4ContractTests
         string audit = ReadRepositoryFile("scripts/publish-aot-audit.ps1");
         string project = ReadRepositoryFile("src/DeskBox/DeskBox.csproj");
 
-        Assert.Contains("$stage4E4MaximumWmc1510Count = 875", audit, StringComparison.Ordinal);
+        Assert.Contains("$stage4E4MaximumWmc1510Count = 790", audit, StringComparison.Ordinal);
         Assert.Contains("Stage 4E-4 WMC1510 count regressed above its ceiling", audit, StringComparison.Ordinal);
         Assert.Contains("Native AOT stage 5B-4C3B2B1", project, StringComparison.Ordinal);
         Assert.Contains("three typed section-editor bridges", project, StringComparison.OrdinalIgnoreCase);

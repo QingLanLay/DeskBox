@@ -34,10 +34,14 @@ internal sealed class AppLifecycleRecoverySessionState
             }
         }
 
-        return IsSessionAvailable
-            ? AppLifecycleRecoverySignalClassifier.ResolveRecoveryReason(
-                message, wParam, lParam, taskbarCreatedMessage)
-            : null;
+        if (!IsSessionAvailable)
+        {
+            return null;
+        }
+
+        string? reason = AppLifecycleRecoverySignalClassifier.ResolveRecoveryReason(
+            message, wParam, lParam, taskbarCreatedMessage);
+        return reason == "display-power-off" ? null : reason;
     }
 }
 

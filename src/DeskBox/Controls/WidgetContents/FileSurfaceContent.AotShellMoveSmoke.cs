@@ -42,20 +42,17 @@ public sealed partial class FileSurfaceContent
             ? CreateMultiSelectionFlyout()
             : CreateItemFlyout(selectedItems[0]);
         string moveText = T("Widget.MoveBackToDesktop");
-        MenuFlyoutItem moveItem = flyout.Items
-            .OfType<MenuFlyoutItem>()
-            .Single(item => string.Equals(
-                item.Text,
-                moveText,
-                StringComparison.Ordinal));
-        int moveIndex = flyout.Items.IndexOf(moveItem);
-        var menuItems = flyout.Items
-            .Select((item, index) => new AotShellMoveMenuItemSnapshot(
-                index,
-                item.GetType().Name,
-                item is MenuFlyoutItem menuItem ? menuItem.Text : string.Empty,
-                item is not MenuFlyoutItem enabledItem || enabledItem.IsEnabled,
-                ReferenceEquals(item, moveItem)))
+        MenuFlyoutItem moveItem = AotContextMenuProbe.FindItem(
+            flyout,
+            moveText);
+        int moveIndex = AotContextMenuProbe.IndexOf(flyout, moveItem);
+        var menuItems = AotContextMenuProbe.Snapshot(flyout, moveItem)
+            .Select(entry => new AotShellMoveMenuItemSnapshot(
+                entry.Index,
+                entry.ItemType,
+                entry.Text,
+                entry.IsEnabled,
+                entry.IsTarget))
             .ToArray();
 
         if (!moveItem.IsEnabled ||
@@ -74,9 +71,17 @@ public sealed partial class FileSurfaceContent
             object? sender,
             WidgetFeedbackRequestedEventArgs args)
         {
+            // The move-back menu owns "file-move-desktop"; a watchdog-
+            // abandoned transfer (the fixture's Late mode) surfaces through
+            // the standard action-error route instead. Either completes the
+            // probe — which one arrived is itself evidence.
             if (string.Equals(
                     args.Request.DeduplicationKey,
                     "file-move-desktop",
+                    StringComparison.Ordinal) ||
+                string.Equals(
+                    args.Request.DeduplicationKey,
+                    "file-action-error",
                     StringComparison.Ordinal))
             {
                 feedbackCompletion.TrySetResult(args.Request);
@@ -86,14 +91,8 @@ public sealed partial class FileSurfaceContent
         FeedbackRequested += OnFeedbackRequested;
         try
         {
-            var peer = new MenuFlyoutItemAutomationPeer(moveItem);
-            if (peer.GetPattern(PatternInterface.Invoke) is not
-                IInvokeProvider invokeProvider)
-            {
-                throw new InvalidOperationException(
-                    "The product Shell move menu item did not expose Invoke automation.");
-            }
-
+            IInvokeProvider invokeProvider =
+                AotContextMenuProbe.InvokeProvider(moveItem);
             invokeProvider.Invoke();
             Task completed = await Task.WhenAny(
                 feedbackCompletion.Task,
@@ -110,7 +109,7 @@ public sealed partial class FileSurfaceContent
                 requestedNames,
                 selectedItems.Select(item => item.Path).ToArray(),
                 _hostWindowHandle.ToInt64(),
-                flyout.Items.Count,
+                AotContextMenuProbe.Count(flyout),
                 moveIndex,
                 moveItem.Text,
                 moveItem.IsEnabled,

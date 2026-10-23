@@ -29,7 +29,8 @@ public partial class SettingsViewModel
         LocalizationService.LanguageFrench,
         LocalizationService.LanguageArabic,
         LocalizationService.LanguageBengali,
-        LocalizationService.LanguageRussian
+        LocalizationService.LanguageRussian,
+        SettingsService.LanguageKorean
     ];
     public string[] AvailableLanguageDisplayNames => _cachedLanguageDisplayNames ??= AvailableLanguages.Select(_localizationService.GetLanguageDisplayName).ToArray();
 

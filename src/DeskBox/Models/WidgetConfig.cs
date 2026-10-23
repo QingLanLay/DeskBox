@@ -46,15 +46,61 @@ public class WidgetConfig
     /// <summary>Vertical distance from the selected anchor edge in logical pixels.</summary>
     public double PositionMarginY { get; set; }
 
+    /// <summary>
+    /// When the user last deliberately placed this widget (drag commit,
+    /// coordinated move). Topology-profile activation yields to the config
+    /// when this is newer than a stored entry's authoritative timestamp on
+    /// the same display — a stale snapshot must never overwrite the user's
+    /// latest placement (the 2026-10-20 reveal-jump incident lineage).
+    /// Null on legacy data: the profile entry then wins as before.
+    /// </summary>
+    public DateTimeOffset? LastUserPlacementUtc { get; set; }
+
     /// <summary>Work area signature of the monitor where the widget was last positioned.</summary>
     public string? PositionMonitorKey { get; set; }
 
     /// <summary>Win32 monitor device name where the widget was last positioned, used before the legacy work area signature.</summary>
     public string? PositionMonitorDeviceName { get; set; }
 
+    /// <summary>
+    /// Stable PnP/display-interface identity of the monitor where the widget was
+    /// last positioned. Unlike <see cref="PositionMonitorDeviceName"/>, this id
+    /// survives the <c>\\.\DISPLAYn</c> renumbering Windows performs when monitors
+    /// are re-enumerated after lock, sleep, or mode switches.
+    /// </summary>
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public string? PositionMonitorStableId { get; set; }
+
     /// <summary>Whether the monitor was primary when this widget position was captured. Primary widgets follow the current primary monitor.</summary>
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
     public bool? PositionMonitorWasPrimary { get; set; }
+
+    /// <summary>
+    /// How this widget selects its monitor. <see cref="WidgetScreenBindingMode.Unbound"/>
+    /// keeps the legacy resolution chain; the other two modes are explicit user
+    /// intent and win over every positional heuristic.
+    /// </summary>
+    [JsonConverter(typeof(WidgetScreenBindingModeJsonConverter))]
+    public WidgetScreenBindingMode ScreenBindingMode { get; set; } = WidgetScreenBindingMode.Unbound;
+
+    /// <summary>
+    /// Stable monitor identity this widget is pinned to. Only meaningful while
+    /// <see cref="ScreenBindingMode"/> is <see cref="WidgetScreenBindingMode.Pinned"/>.
+    /// </summary>
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public string? BoundScreenId { get; set; }
+
+    /// <summary>Friendly name of the bound display captured at bind time; shown when the display is offline (the stable id itself is a machine path).</summary>
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public string? BoundScreenLabel { get; set; }
+
+    /// <summary>
+    /// Set while the surface is collapsed BY THE SYSTEM because its home
+    /// display disconnected (spec D3/5.7): records the home id so the surface
+    /// auto-expands when that display returns. A manual expand/collapse clears it.
+    /// </summary>
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public string? DisconnectCollapsedForScreenId { get; set; }
 
     /// <summary>Bounds coordinate model version. Version 0 is legacy physical pixels; version 1 stores size and anchor margins in logical pixels.</summary>
     public int BoundsCoordinateVersion { get; set; }
@@ -155,6 +201,9 @@ public sealed class WidgetCompactPlacement
     public string? PositionMonitorDeviceName { get; set; }
 
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public string? PositionMonitorStableId { get; set; }
+
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
     public bool? PositionMonitorWasPrimary { get; set; }
 
     public int BoundsCoordinateVersion { get; set; } = WidgetConfig.CurrentBoundsCoordinateVersion;
@@ -240,6 +289,57 @@ public enum WidgetKind
 
     /// <summary>At-a-glance background, time and date widget.</summary>
     Glance
+}
+
+/// <summary>
+/// How a widget selects the monitor it belongs on.
+/// </summary>
+public enum WidgetScreenBindingMode
+{
+    /// <summary>
+    /// Legacy behavior: resolve through the captured last-position identity
+    /// chain (stable id, device name, work-area signature, geometry).
+    /// </summary>
+    Unbound,
+
+    /// <summary>Always follow the current Windows primary monitor.</summary>
+    FollowPrimary,
+
+    /// <summary>Stay on the monitor named by <c>BoundScreenId</c>, identified by its stable id.</summary>
+    Pinned
+}
+
+/// <summary>
+/// Persists <see cref="WidgetScreenBindingMode"/> as a readable string and
+/// downgrades unknown legacy values to <see cref="WidgetScreenBindingMode.Unbound"/>.
+/// </summary>
+public sealed class WidgetScreenBindingModeJsonConverter : JsonConverter<WidgetScreenBindingMode>
+{
+    public override WidgetScreenBindingMode Read(ref Utf8JsonReader reader, Type typeToConvert, JsonSerializerOptions options)
+    {
+        if (reader.TokenType == JsonTokenType.String)
+        {
+            string? value = reader.GetString();
+            return Enum.TryParse(value, ignoreCase: true, out WidgetScreenBindingMode parsed) &&
+                   Enum.IsDefined(parsed)
+                ? parsed
+                : WidgetScreenBindingMode.Unbound;
+        }
+
+        if (reader.TokenType == JsonTokenType.Number && reader.TryGetInt32(out int numericValue))
+        {
+            var parsed = (WidgetScreenBindingMode)numericValue;
+            return Enum.IsDefined(parsed) ? parsed : WidgetScreenBindingMode.Unbound;
+        }
+
+        return WidgetScreenBindingMode.Unbound;
+    }
+
+    public override void Write(Utf8JsonWriter writer, WidgetScreenBindingMode value, JsonSerializerOptions options)
+    {
+        writer.WriteStringValue(
+            Enum.IsDefined(value) ? value.ToString() : WidgetScreenBindingMode.Unbound.ToString());
+    }
 }
 
 public sealed class WidgetKindJsonConverter : JsonConverter<WidgetKind>

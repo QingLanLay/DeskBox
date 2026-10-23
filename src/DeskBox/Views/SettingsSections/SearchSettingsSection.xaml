@@ -47,7 +47,6 @@
 
                     <TextBlock
                         x:Name="EverythingPathText"
-                        Opacity="0.7"
                         Style="{StaticResource SettingDescriptionTextStyle}"
                         TextWrapping="Wrap" />
 
@@ -69,12 +68,12 @@
                         <StackPanel Grid.Column="0" Spacing="2">
                             <TextBlock svc:Localized.Key="Settings.Search.Everything.AdvancedSyntax.Title" />
                             <TextBlock
-                                Opacity="0.7"
+                                Foreground="{ThemeResource TextFillColorTertiaryBrush}"
                                 Style="{StaticResource SettingDescriptionTextStyle}"
                                 TextWrapping="Wrap"
                                 svc:Localized.Key="Settings.Search.Everything.AdvancedSyntax.Description" />
                         </StackPanel>
-                        <ToggleSwitch
+                        <ToggleSwitch svc:Localized.AutomationNameKey="Settings.Search.Everything.Title"
                             x:Name="EverythingAdvancedSyntaxToggle"
                             Grid.Column="1"
                             MinWidth="0"
@@ -89,7 +88,7 @@
                             Click="EverythingAboutButton_Click"
                             Style="{StaticResource ActionButtonStyle}">
                             <StackPanel Orientation="Horizontal" Spacing="6">
-                                <SymbolIcon Symbol="Help" />
+                                <FontIcon Glyph="&#xE897;" FontSize="16" />
                                 <TextBlock svc:Localized.Key="Settings.Search.Everything.About.Button" />
                             </StackPanel>
                         </Button>
@@ -98,7 +97,7 @@
                             Click="EverythingDetectButton_Click"
                             Style="{StaticResource ActionButtonStyle}">
                             <StackPanel Orientation="Horizontal" Spacing="6">
-                                <SymbolIcon Symbol="Refresh" />
+                                <FontIcon Glyph="&#xE72C;" FontSize="16" />
                                 <TextBlock svc:Localized.Key="Settings.Search.Everything.Detect" />
                             </StackPanel>
                         </Button>
@@ -142,7 +141,7 @@
                 <toolkit:SettingsExpander.HeaderIcon>
                     <FontIcon Glyph="&#xE721;" />
                 </toolkit:SettingsExpander.HeaderIcon>
-                <ToggleSwitch
+                <ToggleSwitch svc:Localized.AutomationNameKey="Settings.Search.Hotkey.Title"
                     x:Name="SearchHotkeyToggle"
                     MinWidth="0"
                     OffContent=""
@@ -152,34 +151,9 @@
                     <toolkit:SettingsCard
                         ContentAlignment="Vertical"
                         HorizontalContentAlignment="Stretch"
-                        svc:Localized.HeaderKey="Settings.Search.Hotkey.PresetsTitle">
-                        <ScrollViewer
-                            HorizontalScrollBarVisibility="Auto"
-                            HorizontalScrollMode="Enabled"
-                            VerticalScrollBarVisibility="Disabled"
-                            VerticalScrollMode="Disabled">
-                            <StackPanel
-                                x:Name="SearchHotkeyPresetButtonsPanel"
-                                Orientation="Horizontal"
-                                Spacing="8">
-                                <ToggleButton
-                                    x:Name="SearchHotkeyPresetAltSpaceButton"
-                                    MinWidth="0"
-                                    Padding="12,6"
-                                    Click="SearchHotkeyPresetButton_Click"
-                                    Tag="AltSpace">
-                                    <TextBlock svc:Localized.Key="Settings.GlobalHotkey.Preset.AltSpace" />
-                                </ToggleButton>
-                            </StackPanel>
-                        </ScrollViewer>
-                    </toolkit:SettingsCard>
-                    <toolkit:SettingsCard
-                        ContentAlignment="Vertical"
-                        HorizontalContentAlignment="Stretch"
                         svc:Localized.HeaderKey="Settings.Search.Hotkey.CustomTitle">
                         <Grid RowSpacing="10">
                             <Grid.RowDefinitions>
-                                <RowDefinition Height="Auto" />
                                 <RowDefinition Height="Auto" />
                                 <RowDefinition Height="Auto" />
                             </Grid.RowDefinitions>
@@ -203,8 +177,6 @@
                                     MinWidth="132"
                                     HorizontalAlignment="Stretch"
                                     Click="SearchHotkeyCaptureButton_Click"
-                                    KeyDown="SearchHotkeyCaptureButton_KeyDown"
-                                    LostFocus="SearchHotkeyCaptureButton_LostFocus"
                                     Style="{StaticResource ActionButtonStyle}"
                                     svc:Localized.ToolTipKey="Settings.Search.Hotkey.ChangeTooltip" />
                                 <Button
@@ -214,42 +186,40 @@
                                     Style="{StaticResource ActionButtonStyle}"
                                     svc:Localized.ToolTipKey="Settings.Search.Hotkey.ResetTooltip">
                                     <StackPanel Orientation="Horizontal" Spacing="8">
-                                        <SymbolIcon Symbol="Refresh" />
+                                        <FontIcon Glyph="&#xE72C;" FontSize="16" />
                                         <TextBlock svc:Localized.Key="Common.Restore" />
                                     </StackPanel>
                                 </Button>
-                        <InfoBar
-                            Grid.Row="2"
-                            IsClosable="False"
-                            IsIconVisible="True"
-                            IsOpen="True"
-                            Severity="Informational">
-                            <InfoBar.Content>
-                                <StackPanel Margin="4,10,14,10" Spacing="2">
-                                    <TextBlock
-                                        FontSize="14"
-                                        FontWeight="SemiBold"
-                                        svc:Localized.Key="Settings.GlobalHotkey.ElevatedNotice.Title" />
-                                    <TextBlock
-                                        Foreground="{ThemeResource TextFillColorSecondaryBrush}"
-                                        FontSize="12"
-                                        TextWrapping="WrapWholeWords"
-                                        svc:Localized.Key="Settings.GlobalHotkey.ElevatedNotice.Description" />
-                                </StackPanel>
-                            </InfoBar.Content>
-                        </InfoBar>
                             </Grid>
                         </Grid>
                     </toolkit:SettingsCard>
                 </toolkit:SettingsExpander.Items>
             </toolkit:SettingsExpander>
 
+            <!-- Native InfoBar driven through the native Title/Message
+                 properties. A sibling below the hotkey expander so the long
+                 wrapped message lays out at page width (an earlier
+                 rich-content placement drew the template's action-button
+                 outline across the text). The severity brushes are pinned
+                 from code-behind because ThemeResource severity lookups
+                 fail inside late-created section templates; the message
+                 typography is pinned there too (see the comment on the
+                 interaction page's copy of this notice). -->
+            <InfoBar
+                x:Name="SearchHotkeyElevatedNoticeInfoBar"
+                IsClosable="False"
+                IsIconVisible="True"
+                IsOpen="True"
+                Severity="Informational"
+                svc:Localized.DescriptionKey="Settings.GlobalHotkey.ElevatedNotice.Description"
+                svc:Localized.HeaderKey="Settings.GlobalHotkey.ElevatedNotice.Title" />
+
             <!-- Scope: DeskBox content -->
             <toolkit:SettingsCard
                 HorizontalContentAlignment="Right"
                 svc:Localized.DescriptionKey="Settings.Search.Scope.DeskBox.Description"
                 svc:Localized.HeaderKey="Settings.Search.Scope.DeskBox">
-                <ToggleSwitch
+                <ToggleSwitch svc:Localized.AutomationNameKey="Settings.Search.Scope.DeskBox"
                     x:Name="SearchDeskBoxContentToggle"
                     OnContent=""
                     OffContent=""
@@ -265,7 +235,7 @@
                 <toolkit:SettingsCard.HeaderIcon>
                     <FontIcon Glyph="&#xE8F1;" />
                 </toolkit:SettingsCard.HeaderIcon>
-                <ToggleSwitch
+                <ToggleSwitch svc:Localized.AutomationNameKey="Settings.Search.Recommendations.Title"
                     x:Name="SearchRecommendationsToggle"
                     OnContent=""
                     OffContent=""
@@ -280,7 +250,7 @@
                 <toolkit:SettingsCard.HeaderIcon>
                     <FontIcon Glyph="&#xE7C5;" />
                 </toolkit:SettingsCard.HeaderIcon>
-                <ComboBox x:Name="SearchDefaultTabComboBox"
+                <ComboBox svc:Localized.AutomationNameKey="Settings.Search.DefaultTab.Title" x:Name="SearchDefaultTabComboBox"
                           MinWidth="150"
                           SelectionChanged="SearchDefaultTabComboBox_SelectionChanged">
                     <ComboBoxItem Tag="all">
@@ -306,7 +276,7 @@
                 <toolkit:SettingsCard.HeaderIcon>
                     <FontIcon Glyph="&#xE945;" />
                 </toolkit:SettingsCard.HeaderIcon>
-                <ComboBox x:Name="SearchIconAnimationComboBox"
+                <ComboBox svc:Localized.AutomationNameKey="Settings.Search.IconAnimation.Title" x:Name="SearchIconAnimationComboBox"
                           MinWidth="130"
                           SelectionChanged="SearchIconAnimationComboBox_SelectionChanged">
                     <ComboBoxItem Tag="0">

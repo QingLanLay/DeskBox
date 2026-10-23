@@ -34,7 +34,9 @@ public static class ServiceRegistry
             new OrganizerService(
                 sp.GetRequiredService<SettingsService>(),
                 sp.GetRequiredService<FileService>()));
-        services.AddSingleton<QuickCaptureService>(_ => new QuickCaptureService());
+        services.AddSingleton<QuickCaptureService>(sp => new QuickCaptureService(
+            recycleAttachmentFileAsync: path =>
+                sp.GetRequiredService<FileService>().DeleteEntryAsync(path, recycle: true)));
         services.AddSingleton<LocalizationService>();
         services.AddSingleton<ThemeService>();
 

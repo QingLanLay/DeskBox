@@ -15,6 +15,9 @@ namespace DeskBox.Services;
 public sealed partial class DeskBoxDataBackupService
 {
     private const int BackupSchemaVersion = 2;
+    // Upper bound the wipe-recovery peek shares so its offer never proposes
+    // an archive the restore validator's schema gate would refuse.
+    internal const int CurrentBackupSchemaVersion = BackupSchemaVersion;
     private const int MinimumSupportedBackupSchemaVersion = 1;
     private const int MaxPreRestoreBackupCount = 5;
     private const int MaxRestoreFileCount = 100_000;
@@ -94,11 +97,44 @@ public sealed partial class DeskBoxDataBackupService
                 : recoveryRootPath);
     }
 
+    private Func<bool>? _isRecoveryOfferPending;
+
+    /// <summary>
+    /// Wires the wipe-recovery pending probe. While a recovery decision is
+    /// pending (its marker exists), scheduled automatic snapshots stay paused:
+    /// every snapshot of the fresh-default profile would occupy a retention
+    /// slot and evict the pre-wipe snapshots the recovery offer exists to
+    /// serve. Manual "back up now" (forced) snapshots stay available — the
+    /// user is already looking at the backup page.
+    /// </summary>
+    public void SetRecoveryOfferPauseProbe(Func<bool>? isPending) => _isRecoveryOfferPending = isPending;
+
+    private Func<string?>? _recoverySnapshotRetentionPin;
+
+    /// <summary>
+    /// Wires the pending-recovery snapshot pin. While a wipe-recovery
+    /// decision is pending, the marker-referenced archive is exempt from
+    /// retention pruning (it does not consume a retention slot), so manual
+    /// "back up now" runs during the pending window cannot evict the
+    /// snapshot the offer restores from. The pin ends with the marker, the
+    /// same lifecycle <see cref="PrunePreRestoreBackups"/> gives its
+    /// safety-archive pin.
+    /// </summary>
+    public void SetRecoverySnapshotRetentionPin(Func<string?>? pinProvider) =>
+        _recoverySnapshotRetentionPin = pinProvider;
+
+    private bool IsRecoveryOfferPauseActive =>
+        _isRecoveryOfferPending?.Invoke() == true;
+
     internal string DataDirectory => Path.Combine(_rootPath, "data");
 
     /// <summary>
     /// Automatic snapshots are retained outside the app-data root so they
-    /// survive normal uninstall and can be restored after reinstall.
+    /// survive a normal direct-install uninstall and can be restored after
+    /// reinstall. On the store channel, MSIX AppData write virtualization
+    /// places them under Packages/[PFN]/LocalCache instead: they are
+    /// deleted with the package on uninstall but kept across updates over
+    /// the same PackageFamilyName.
     /// </summary>
     internal string AutomaticSnapshotDirectory => Path.Combine(_recoveryRootPath, "automatic");
 
@@ -242,6 +278,13 @@ public sealed partial class DeskBoxDataBackupService
         await _gate.WaitAsync(cancellationToken);
         try
         {
+            if (!force && IsRecoveryOfferPauseActive)
+            {
+                App.Log("[DataBackup] Skipped the scheduled snapshot: a recovery decision is pending; " +
+                        "automatic snapshots stay paused until the user answers the recovery offer.");
+                return new(BackupOutcome.Skipped);
+            }
+
             AutomaticBackupOptions options = _automaticBackupOptions;
             // "Back up now" (force) stays available even when the schedule is off.
             if (!options.IsEnabled && !force)
@@ -271,7 +314,10 @@ public sealed partial class DeskBoxDataBackupService
                 target.Directory,
                 $"DeskBox-Auto-{DateTime.Now:yyyyMMdd-HHmmss}.zip");
             await CreateArchiveCoreAsync(snapshotPath, "automatic", cancellationToken);
-            PruneAutomaticSnapshots(target.Directory, options.RetentionCount);
+            PruneAutomaticSnapshots(
+                target.Directory,
+                options.RetentionCount,
+                _recoverySnapshotRetentionPin?.Invoke());
             if (target.UsedFallback)
             {
                 string fallbackMessage =
@@ -533,7 +579,8 @@ public sealed partial class DeskBoxDataBackupService
                 archiveInfo.Manifest.CreatedAtUtc,
                 archiveInfo.Manifest.AppVersion,
                 Domains: null,
-                AllowMissingSettings: allowMissingSettings);
+                AllowMissingSettings: allowMissingSettings,
+                SourceDataPath: archiveInfo.Manifest.SourceDataPath);
             await WritePendingRestoreMarkerAtomicallyAsync(
                 PendingRestoreMarkerPath,
                 marker,
@@ -1246,6 +1293,18 @@ public sealed partial class DeskBoxDataBackupService
                 return DeskBoxRestoreApplyResult.NoPendingRestore;
             }
 
+            if (marker.Domains is not { Count: > 0 } && !marker.FullRestoreConfirmed)
+            {
+                // Same defense for full restores: the marker predates its
+                // confirmation dialog, so an unanswered dialog (hidden
+                // settings window, exit, crash) must discard the restore
+                // instead of swapping the whole data directory on the next
+                // launch.
+                DeletePendingRestoreCore();
+                App.Log("[DataBackup] Discarded an unconfirmed full restore.");
+                return DeskBoxRestoreApplyResult.NoPendingRestore;
+            }
+
             if (marker.Domains is { Count: > 0 } markerDomains)
             {
                 return await ApplyScopedRestoreCoreAsync(
@@ -1288,7 +1347,12 @@ public sealed partial class DeskBoxDataBackupService
             TryDeleteDirectory(stagingRoot);
             TryDeleteDirectory(rollbackRoot);
             App.Log($"[DataBackup] Applied pending restore from '{marker.ArchivePath}'.");
-            return new DeskBoxRestoreApplyResult(true, true, null);
+            return new DeskBoxRestoreApplyResult(
+                true,
+                true,
+                null,
+                DeskBoxRestoreApplyKind.Full,
+                marker.SourceDataPath);
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
         {
@@ -1298,7 +1362,7 @@ public sealed partial class DeskBoxDataBackupService
         {
             App.Log($"[DataBackup] Pending restore failed: {ex}");
             DeletePendingRestoreCore();
-            return new DeskBoxRestoreApplyResult(true, false, ex.Message);
+            return new DeskBoxRestoreApplyResult(true, false, ex.Message, DeskBoxRestoreApplyKind.Full);
         }
         finally
         {
@@ -1431,7 +1495,7 @@ public sealed partial class DeskBoxDataBackupService
             TryDeleteFile(PendingRestoreMarkerPath);
             TryDeleteDirectory(stagingRoot);
             App.Log($"[DataBackup] Applied scoped restore from '{marker.ArchivePath}' (domains: {scope}).");
-            return new DeskBoxRestoreApplyResult(true, true, null);
+            return new DeskBoxRestoreApplyResult(true, true, null, DeskBoxRestoreApplyKind.Scoped);
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
         {
@@ -1453,7 +1517,8 @@ public sealed partial class DeskBoxDataBackupService
                 return new DeskBoxRestoreApplyResult(
                     true,
                     false,
-                    $"Restore failed on {attempts} launches and was abandoned: {ex.Message}");
+                    $"Restore failed on {attempts} launches and was abandoned: {ex.Message}",
+                    DeskBoxRestoreApplyKind.Scoped);
             }
 
             App.Log(
@@ -1473,7 +1538,7 @@ public sealed partial class DeskBoxDataBackupService
                 App.Log($"[DataBackup] Failed to persist restore attempt count: {writeEx.Message}");
             }
 
-            return new DeskBoxRestoreApplyResult(true, false, ex.Message);
+            return new DeskBoxRestoreApplyResult(true, false, ex.Message, DeskBoxRestoreApplyKind.Scoped);
         }
     }
 
@@ -1506,6 +1571,43 @@ public sealed partial class DeskBoxDataBackupService
                         ? true
                         : marker.ScopedRestoreConfirmed
                 },
+                cancellationToken);
+            return true;
+        }
+        finally
+        {
+            _gate.Release();
+        }
+    }
+
+    /// <summary>
+    /// Persists the user's "restore" answer onto a pending FULL restore
+    /// marker. The marker is written before its confirmation dialog opens,
+    /// so this call is what authorizes the next launch to apply it; until
+    /// then the startup gate discards the marker. Returns false when
+    /// nothing is pending or the pending restore is scoped (scoped
+    /// restores confirm through their own item-mode call).
+    /// </summary>
+    internal async Task<bool> ConfirmPendingFullRestoreAsync(
+        CancellationToken cancellationToken = default)
+    {
+        await _gate.WaitAsync(cancellationToken);
+        try
+        {
+            if (!File.Exists(PendingRestoreMarkerPath))
+            {
+                return false;
+            }
+
+            PendingRestoreMarker marker = await ReadPendingRestoreMarkerAsync(cancellationToken);
+            if (marker.Domains is { Count: > 0 })
+            {
+                return false;
+            }
+
+            await WritePendingRestoreMarkerAtomicallyAsync(
+                PendingRestoreMarkerPath,
+                marker with { FullRestoreConfirmed = true },
                 cancellationToken);
             return true;
         }
@@ -2493,6 +2595,113 @@ public sealed partial class DeskBoxDataBackupService
         }
     }
 
+    /// <summary>
+    /// True when any automatic recovery snapshot predates
+    /// <paramref name="notAfterUtc"/> — the cheap existence probe the
+    /// wipe-recovery detection uses before suppressing the startup snapshot
+    /// on a fresh-default launch.
+    /// </summary>
+    internal async Task<bool> HasRecoverySnapshotNotAfterAsync(
+        DateTimeOffset notAfterUtc,
+        CancellationToken cancellationToken = default)
+    {
+        await _gate.WaitAsync(cancellationToken);
+        try
+        {
+            return EnumerateRecoverySnapshotFiles()
+                .Any(path => File.GetLastWriteTimeUtc(path) <= notAfterUtc);
+        }
+        finally
+        {
+            _gate.Release();
+        }
+    }
+
+    /// <summary>
+    /// Newest automatic recovery snapshot that predates this process and
+    /// passes the wipe-recovery content gates (readable manifest and settings,
+    /// resolved initial setup, live widgets, a settings schema this build can
+    /// own). Newest-first with per-archive peek validation: the archive
+    /// created moments after a wipe captures fresh defaults rather than the
+    /// lost profile, so file time alone must never pick the candidate.
+    /// </summary>
+    internal async Task<RecoverySnapshotCandidate?> GetLatestValidRecoverySnapshotAsync(
+        DateTimeOffset notAfterUtc,
+        CancellationToken cancellationToken = default)
+    {
+        await _gate.WaitAsync(cancellationToken);
+        try
+        {
+            foreach (string path in EnumerateRecoverySnapshotFiles()
+                         .Where(path => File.GetLastWriteTimeUtc(path) <= notAfterUtc)
+                         .OrderByDescending(File.GetLastWriteTimeUtc))
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+                RecoverySnapshotPeek peek = await PeekRecoverySnapshotAsync(path, cancellationToken);
+                if (RecoverySnapshotCandidatePolicy.Evaluate(peek) !=
+                    RecoverySnapshotCandidateVerdict.Valid)
+                {
+                    continue;
+                }
+
+                return new RecoverySnapshotCandidate(
+                    path,
+                    peek.CreatedAtUtc ?? File.GetLastWriteTimeUtc(path),
+                    peek.AppVersion,
+                    peek.BackupSchemaVersion,
+                    peek.LiveWidgetCount,
+                    IsBackupFromNewerApp(peek.AppVersion));
+            }
+
+            return null;
+        }
+        finally
+        {
+            _gate.Release();
+        }
+    }
+
+    private IEnumerable<string> EnumerateRecoverySnapshotFiles()
+    {
+        string[] directories =
+        [
+            EffectiveAutomaticSnapshotDirectory,
+            AutomaticSnapshotDirectory,
+            LegacyAutomaticSnapshotDirectory
+        ];
+        foreach (string directory in directories
+                     .Distinct(StringComparer.OrdinalIgnoreCase)
+                     .Where(Directory.Exists))
+        {
+            foreach (string path in Directory.EnumerateFiles(directory, "DeskBox-Auto-*.zip"))
+            {
+                yield return path;
+            }
+        }
+    }
+
+    private static async Task<RecoverySnapshotPeek> PeekRecoverySnapshotAsync(
+        string snapshotPath,
+        CancellationToken cancellationToken)
+    {
+        try
+        {
+            await using var input = new FileStream(
+                snapshotPath,
+                FileMode.Open,
+                FileAccess.Read,
+                FileShare.ReadWrite | FileShare.Delete,
+                bufferSize: 81920,
+                useAsync: true);
+            using var archive = new ZipArchive(input, ZipArchiveMode.Read, leaveOpen: false);
+            return RecoverySnapshotPeekReader.Read(archive);
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or InvalidDataException)
+        {
+            return RecoverySnapshotPeek.Unreadable;
+        }
+    }
+
     public async Task<bool> DeleteSnapshotAsync(
         string snapshotPath,
         CancellationToken cancellationToken = default)
@@ -2842,19 +3051,31 @@ public sealed partial class DeskBoxDataBackupService
         throw new IOException($"DeskBox data file changed while creating a backup snapshot: '{sourcePath}'.");
     }
 
-    private void PruneAutomaticSnapshots(string directory, int retentionCount)
+    private void PruneAutomaticSnapshots(
+        string directory,
+        int retentionCount,
+        string? pinnedPath = null)
     {
         if (!Directory.Exists(directory))
         {
             return;
         }
 
-        foreach (string obsoletePath in Directory
+        int kept = 0;
+        foreach (string candidatePath in Directory
                      .EnumerateFiles(directory, "DeskBox-Auto-*.zip")
-                     .OrderByDescending(File.GetLastWriteTimeUtc)
-                     .Skip(Math.Max(1, retentionCount)))
+                     .OrderByDescending(File.GetLastWriteTimeUtc))
         {
-            TryDeleteFile(obsoletePath);
+            if (pinnedPath is not null &&
+                string.Equals(candidatePath, pinnedPath, StringComparison.OrdinalIgnoreCase))
+            {
+                continue;
+            }
+
+            if (++kept > Math.Max(1, retentionCount))
+            {
+                TryDeleteFile(candidatePath);
+            }
         }
     }
 
@@ -3057,8 +3278,13 @@ public sealed partial class DeskBoxDataBackupService
         // data: carrying pending/committed/orig files into a backup would
         // land a half-applied restore on the target machine and let a stale
         // journal fire the first time a style restore runs there.
+        // The wipe-recovery offer marker is machine-local session state for
+        // an in-flight decision: restoring it onto a machine (or back onto
+        // this one through an old archive) would re-offer a restore right
+        // after the user finished one. Detection rewrites it when warranted.
         if (relativePath.EndsWith(".tmp", StringComparison.OrdinalIgnoreCase) ||
             relativePath.Contains(".style-restore.", StringComparison.OrdinalIgnoreCase) ||
+            string.Equals(relativePath, RecoveryOfferStore.MarkerFileName, StringComparison.OrdinalIgnoreCase) ||
             IsInternalStoreRecoveryArtifact(relativePath))
         {
             return false;
@@ -3271,7 +3497,25 @@ public sealed partial class DeskBoxDataBackupService
         // chooses an item mode. Null means a pre-existing marker or full
         // restore and retains its historical apply behavior.
         [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
-        bool? ScopedRestoreConfirmed = null);
+        bool? ScopedRestoreConfirmed = null,
+        // Full restores are likewise unconfirmed until the user answers the
+        // restore dialog: the marker is written before that dialog opens, so
+        // a crash, hidden window, or exit in between must never let the next
+        // launch swap the whole data directory. Markers from versions
+        // without this field deserialize as false and are discarded — the
+        // safe direction, since the user simply re-runs the restore.
+        [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingDefault)]
+        bool FullRestoreConfirmed = false,
+        // Full restores only: the source machine's data directory recorded
+        // by the backup manifest. The apply swap moves only files, so after
+        // it lands this is the sole trace of where the archived settings'
+        // machine-local paths (managed storage root, custom snapshot
+        // folder) originally lived — the post-restore recovery step derives
+        // the source user profile from it. Null on scoped markers and on
+        // markers written before this field existed; those launches simply
+        // skip the rebase.
+        [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+        string? SourceDataPath = null);
 
     [JsonSourceGenerationOptions(
         GenerationMode = JsonSourceGenerationMode.Metadata,
@@ -3387,10 +3631,19 @@ internal sealed record TodoRestorePlan(
 /// </summary>
 public sealed record DeskBoxDomainItemCount(string Domain, int Items);
 
+internal enum DeskBoxRestoreApplyKind
+{
+    None = 0,
+    Full,
+    Scoped,
+}
+
 internal sealed record DeskBoxRestoreApplyResult(
     bool HadPendingRestore,
     bool Succeeded,
-    string? ErrorMessage)
+    string? ErrorMessage,
+    DeskBoxRestoreApplyKind Kind = DeskBoxRestoreApplyKind.None,
+    string? SourceDataPath = null)
 {
     public static DeskBoxRestoreApplyResult NoPendingRestore { get; } = new(false, true, null);
 }

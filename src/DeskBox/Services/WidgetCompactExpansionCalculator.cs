@@ -144,6 +144,43 @@ public static class WidgetCompactExpansionCalculator
         };
     }
 
+    public static string ToPositionAnchor(WidgetCompactExpansionAnchor anchor)
+    {
+        return anchor switch
+        {
+            WidgetCompactExpansionAnchor.RightTop => WidgetPositionAnchors.RightTop,
+            WidgetCompactExpansionAnchor.LeftBottom => WidgetPositionAnchors.LeftBottom,
+            WidgetCompactExpansionAnchor.RightBottom => WidgetPositionAnchors.RightBottom,
+            _ => WidgetPositionAnchors.LeftTop
+        };
+    }
+
+    /// <summary>
+    /// Classifies which corner of the expanded bounds the capsule actually
+    /// occupied, by comparing centers. Ties resolve toward LeftTop so a
+    /// centered capsule classifies deterministically. This observes reality
+    /// instead of trusting bookkeeping anchors, which may have diverged from
+    /// the capsule's true corner.
+    /// </summary>
+    public static WidgetCompactExpansionAnchor ResolveAnchorFromObservedCompactBounds(
+        RectInt32 compactBounds,
+        RectInt32 expandedBounds)
+    {
+        bool anchorRight =
+            compactBounds.X + Math.Max(1, compactBounds.Width) / 2 >
+            expandedBounds.X + Math.Max(1, expandedBounds.Width) / 2;
+        bool anchorBottom =
+            compactBounds.Y + Math.Max(1, compactBounds.Height) / 2 >
+            expandedBounds.Y + Math.Max(1, expandedBounds.Height) / 2;
+        return (anchorRight, anchorBottom) switch
+        {
+            (true, true) => WidgetCompactExpansionAnchor.RightBottom,
+            (true, false) => WidgetCompactExpansionAnchor.RightTop,
+            (false, true) => WidgetCompactExpansionAnchor.LeftBottom,
+            _ => WidgetCompactExpansionAnchor.LeftTop
+        };
+    }
+
     public static WidgetCompactExpansionAnchor ResolveHorizontalResizeAnchor(
         WidgetCompactExpansionAnchor currentAnchor,
         string? resizeDirection)

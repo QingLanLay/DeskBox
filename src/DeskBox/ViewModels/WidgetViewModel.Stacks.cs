@@ -624,6 +624,43 @@ public partial class WidgetViewModel
             StringComparer.OrdinalIgnoreCase);
     }
 
+    // Block move for top-level display-unit order keys (loose files and
+    // stack cards). targetPosition counts the non-moving units that stay
+    // ahead of the block; after the removal it is directly an index into the
+    // remainder, so it survives membership mutations that shifted raw
+    // display indices between capture and commit.
+    internal static bool TryMoveDisplayUnitOverrides(
+        List<string> order,
+        IReadOnlyCollection<string> movingKeys,
+        int targetPosition)
+    {
+        if (order.Count == 0 || movingKeys.Count == 0)
+        {
+            return false;
+        }
+
+        HashSet<string> movingKeySet = movingKeys
+            .ToHashSet(StringComparer.Ordinal);
+        List<string> moving = order
+            .Where(movingKeySet.Contains)
+            .ToList();
+        if (moving.Count == 0)
+        {
+            return false;
+        }
+
+        List<string> original = order.ToList();
+        int insertionIndex = Math.Clamp(
+            targetPosition,
+            0,
+            order.Count - moving.Count);
+        order.RemoveAll(movingKeySet.Contains);
+        order.InsertRange(insertionIndex, moving);
+        return !order.SequenceEqual(
+            original,
+            StringComparer.Ordinal);
+    }
+
     public bool MoveStackMembersForReorder(
         string stackKey,
         IEnumerable<WidgetItem> draggedItems,
@@ -743,6 +780,278 @@ public partial class WidgetViewModel
             MoveDisplayUnitForReorder(
                 GetLooseItemOrderKey(item),
                 visibleInsertionIndex);
+    }
+
+    /// <summary>
+    /// Block-aware multi-selection variant of
+    /// <see cref="MoveVisibleItemForReorder"/>. The dragged items keep their
+    /// visible relative order and land as one contiguous block. Inline
+    /// expanded-stack members whose insertion point stays inside that stack
+    /// reorder within it (reusing the plural member move); members dropped
+    /// outside their stack region are detached first, mirroring the
+    /// single-item boundary semantics. Every phase funnels into at most one
+    /// projection rebuild + persist, so a large selection cannot trigger a
+    /// per-item rebuild storm.
+    /// </summary>
+    public bool MoveVisibleItemsForReorder(
+        IReadOnlyList<WidgetItem> draggedItems,
+        int visibleInsertionIndex)
+    {
+        if (!UsesStackProjection || draggedItems.Count == 0)
+        {
+            return false;
+        }
+
+        HashSet<WidgetItem> draggedSet = new(
+            draggedItems,
+            ReferenceEqualityComparer.Instance);
+        List<WidgetItem> block = _stackDisplayItems
+            .Where(draggedSet.Contains)
+            .ToList();
+        if (block.Count == 0)
+        {
+            return false;
+        }
+
+        if (block.Count == 1)
+        {
+            return MoveVisibleItemForReorder(
+                block[0],
+                visibleInsertionIndex);
+        }
+
+        int cappedIndex = Math.Clamp(
+            visibleInsertionIndex,
+            0,
+            _stackDisplayItems.Count);
+
+        // Classify before mutating anything: the insertion index is only
+        // valid against the display list this drag started from.
+        Dictionary<WidgetStackItem, List<WidgetItem>> memberMoves = new(
+            ReferenceEqualityComparer.Instance);
+        List<WidgetItem> looseOrDetached = [];
+        foreach (WidgetItem item in block)
+        {
+            if (item is WidgetStackItem)
+            {
+                continue;
+            }
+
+            if (!item.IsStackChild)
+            {
+                looseOrDetached.Add(item);
+                continue;
+            }
+
+            WidgetStackItem? containingStack = FindContainingStack(item);
+            if (containingStack is null)
+            {
+                continue;
+            }
+
+            int stackIndex = IndexOfReference(
+                _stackDisplayItems,
+                containingStack,
+                0);
+            int memberEndExclusive =
+                stackIndex + 1 + containingStack.Members.Count;
+            if (cappedIndex > stackIndex && cappedIndex < memberEndExclusive)
+            {
+                if (!memberMoves.TryGetValue(
+                        containingStack,
+                        out List<WidgetItem>? members))
+                {
+                    members = [];
+                    memberMoves[containingStack] = members;
+                }
+
+                members.Add(item);
+            }
+            else
+            {
+                looseOrDetached.Add(item);
+            }
+        }
+
+        // Resolve the landing position once, as "how many non-moving
+        // top-level units stay ahead of the block". Later phases (member
+        // reorder, detach rebuild) can shift raw indices but not this count.
+        HashSet<string> movingKeys = looseOrDetached
+            .Select(GetLooseItemOrderKey)
+            .ToHashSet(StringComparer.Ordinal);
+        int targetTopLevelPosition = 0;
+        for (int index = 0; index < cappedIndex; index++)
+        {
+            WidgetItem candidate = _stackDisplayItems[index];
+            if (IsTopLevelDisplayUnit(candidate) &&
+                !movingKeys.Contains(GetDisplayUnitOrderKey(candidate)))
+            {
+                targetTopLevelPosition++;
+            }
+        }
+
+        bool changed = false;
+        foreach (KeyValuePair<WidgetStackItem, List<WidgetItem>> move in
+             memberMoves)
+        {
+            int stackIndex = IndexOfReference(
+                _stackDisplayItems,
+                move.Key,
+                0);
+            if (stackIndex < 0)
+            {
+                continue;
+            }
+
+            int memberInsertionIndex = Math.Clamp(
+                cappedIndex - (stackIndex + 1),
+                0,
+                move.Key.Members.Count);
+            changed |= MoveStackMembersForReorder(
+                move.Key.StackKey,
+                move.Value,
+                memberInsertionIndex);
+        }
+
+        bool membershipChanged = false;
+        if (looseOrDetached.Any(item => item.IsStackChild))
+        {
+            membershipChanged = DetachStackMembersForBlockReorder(
+                looseOrDetached.Where(item => item.IsStackChild).ToList());
+            if (membershipChanged)
+            {
+                // Make the detached members visible as loose units so the
+                // block move below sees their order keys.
+                RebuildStackDisplayItems();
+            }
+        }
+
+        if (looseOrDetached.Count > 0)
+        {
+            List<string> currentOrder = GetCurrentDisplayUnitOrder();
+            List<string> orderedMovingKeys = looseOrDetached
+                .Select(GetLooseItemOrderKey)
+                .Distinct(StringComparer.Ordinal)
+                .ToList();
+            bool orderChanged = TryMoveDisplayUnitOverrides(
+                currentOrder,
+                orderedMovingKeys,
+                targetTopLevelPosition);
+            if (orderChanged)
+            {
+                _stackOrder = currentOrder;
+            }
+
+            if (membershipChanged)
+            {
+                PersistStackCustomizations();
+            }
+            else if (orderChanged)
+            {
+                PersistStackDisplayOrder();
+            }
+
+            changed |= membershipChanged || orderChanged;
+        }
+
+        return changed;
+    }
+
+    // Mirrors RemoveItemsFromStack's dissolution semantics for a block
+    // reorder detach, but defers persistence so the caller can bundle the
+    // membership change with the display-order move into one rebuild + save.
+    private bool DetachStackMembersForBlockReorder(
+        IReadOnlyList<WidgetItem> items)
+    {
+        Dictionary<WidgetStackItem, List<string>> removalsByStack = new(
+            ReferenceEqualityComparer.Instance);
+        foreach (WidgetItem item in items)
+        {
+            WidgetStackItem? stack = FindContainingStack(item);
+            if (stack is null)
+            {
+                continue;
+            }
+
+            string path = NormalizeStackMemberPath(item.Path);
+            if (!removalsByStack.TryGetValue(
+                    stack,
+                    out List<string>? paths))
+            {
+                paths = [];
+                removalsByStack[stack] = paths;
+            }
+
+            if (!paths.Contains(path, StringComparer.OrdinalIgnoreCase))
+            {
+                paths.Add(path);
+            }
+        }
+
+        bool changed = false;
+        foreach (KeyValuePair<WidgetStackItem, List<string>> entry in
+             removalsByStack)
+        {
+            WidgetStackItem stack = entry.Key;
+            HashSet<string> removedPaths = entry.Value
+                .Where(path => stack.Members.Any(member =>
+                    string.Equals(
+                        NormalizeStackMemberPath(member.Path),
+                        path,
+                        StringComparison.OrdinalIgnoreCase)))
+                .ToHashSet(StringComparer.OrdinalIgnoreCase);
+            if (removedPaths.Count == 0)
+            {
+                continue;
+            }
+
+            if (stack.Members.Count - removedPaths.Count < 2)
+            {
+                if (stack.IsManual)
+                {
+                    RemoveManualStackCustomization(stack.StackKey);
+                }
+                else
+                {
+                    _disabledStacks.Add(stack.StackKey);
+                    _expandedStackKey = null;
+                }
+
+                changed = true;
+                continue;
+            }
+
+            if (!stack.IsManual)
+            {
+                // Rare: partially emptying an automatic stack keeps it
+                // alive as a manual stack. The conversion persists on its
+                // own; the block persist after it still runs only once.
+                stack = ConvertStackToManual(stack, []);
+            }
+
+            if (!_stackMemberOverrides.TryGetValue(
+                    stack.StackKey,
+                    out List<string>? members))
+            {
+                continue;
+            }
+
+            int removed = members.RemoveAll(path => removedPaths.Contains(
+                NormalizeStackMemberPath(path)));
+            if (removed == 0)
+            {
+                continue;
+            }
+
+            if (members.Count < 2)
+            {
+                RemoveManualStackCustomization(stack.StackKey);
+            }
+
+            changed = true;
+        }
+
+        return changed;
     }
 
     internal void StabilizeStackDisplay()

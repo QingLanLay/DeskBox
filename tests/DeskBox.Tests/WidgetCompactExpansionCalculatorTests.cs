@@ -1,3 +1,4 @@
+using DeskBox.Models;
 using DeskBox.Services;
 using Windows.Graphics;
 
@@ -163,5 +164,97 @@ public sealed class WidgetCompactExpansionCalculatorTests
             WidgetCompactExpansionCalculator.ResolveHorizontalResizeAnchor(
                 current,
                 direction));
+    }
+
+    [Theory]
+    [InlineData(100, 50, WidgetCompactExpansionAnchor.LeftTop)]
+    [InlineData(420, 50, WidgetCompactExpansionAnchor.RightTop)]
+    [InlineData(100, 308, WidgetCompactExpansionAnchor.LeftBottom)]
+    [InlineData(420, 308, WidgetCompactExpansionAnchor.RightBottom)]
+    public void ResolveAnchorFromObservedCompactBounds_ClassifiesTheOccupiedCorner(
+        int compactX,
+        int compactY,
+        WidgetCompactExpansionAnchor expected)
+    {
+        Assert.Equal(
+            expected,
+            WidgetCompactExpansionCalculator.ResolveAnchorFromObservedCompactBounds(
+                new RectInt32(compactX, compactY, 80, 42),
+                new RectInt32(100, 50, 400, 300)));
+    }
+
+    [Fact]
+    public void ResolveAnchorFromObservedCompactBounds_ResolvesTiesTowardLeftTop()
+    {
+        // A capsule centered on the panel must classify deterministically.
+        Assert.Equal(
+            WidgetCompactExpansionAnchor.LeftTop,
+            WidgetCompactExpansionCalculator.ResolveAnchorFromObservedCompactBounds(
+                new RectInt32(160, 129, 80, 42),
+                new RectInt32(0, 0, 400, 300)));
+    }
+
+    [Fact]
+    public void ResolveAnchorFromObservedCompactBounds_SurvivesAnchorPlacementDivergence()
+    {
+        // The observed corner is computed from geometry only: a capsule that
+        // sits at the panel's top while the recorded anchor says bottom still
+        // classifies as top, so a height resize keeps it at the top edge.
+        RectInt32 expanded = new(1332, 28, 577, 690);
+        RectInt32 compactAtTop = new(1332, 28, 577, 52);
+
+        WidgetCompactExpansionAnchor observed =
+            WidgetCompactExpansionCalculator.ResolveAnchorFromObservedCompactBounds(
+                compactAtTop,
+                expanded);
+
+        Assert.Equal(WidgetCompactExpansionAnchor.LeftTop, observed);
+        Assert.NotEqual(
+            observed,
+            WidgetCompactExpansionCalculator.FromPositionAnchor("RightBottom"));
+    }
+
+    [Theory]
+    [InlineData(WidgetCompactExpansionAnchor.LeftTop, 1332, 28)]
+    [InlineData(WidgetCompactExpansionAnchor.RightTop, 1909 - 200, 28)]
+    [InlineData(WidgetCompactExpansionAnchor.LeftBottom, 1332, 728 - 42)]
+    [InlineData(WidgetCompactExpansionAnchor.RightBottom, 1909 - 200, 728 - 42)]
+    public void Calculate_WithObservedCornerKeepsTheCapsuleOnItsOwnEdgeAfterHeightResize(
+        WidgetCompactExpansionAnchor anchor,
+        int expectedX,
+        int expectedY)
+    {
+        // Grow the panel from 690 to 700 tall; the capsule must stay pinned
+        // to the corner it occupied, not jump to the opposite edge. (Custom
+        // widths are still floored at MinWidth=144 by the calculator.)
+        RectInt32 resized = new(1332, 28, 577, 700);
+
+        RectInt32 compact = WidgetCompactBoundsCalculator.Calculate(
+            resized,
+            WidgetCompactExpansionCalculator.ToPositionAnchor(anchor),
+            dpiScale: 1.0,
+            contentMode: null,
+            widgetKind: WidgetKind.File,
+            compactWidth: 200.0,
+            clampCustomWidth: false,
+            heightContentMode: null);
+
+        Assert.Equal(200, compact.Width);
+        Assert.Equal(42, compact.Height);
+        Assert.Equal(expectedX, compact.X);
+        Assert.Equal(expectedY, compact.Y);
+    }
+
+    [Fact]
+    public void ToPositionAnchor_RoundTripsThroughFromPositionAnchor()
+    {
+        foreach (WidgetCompactExpansionAnchor anchor in Enum.GetValues(
+                     typeof(WidgetCompactExpansionAnchor)))
+        {
+            Assert.Equal(
+                anchor,
+                WidgetCompactExpansionCalculator.FromPositionAnchor(
+                    WidgetCompactExpansionCalculator.ToPositionAnchor(anchor)));
+        }
     }
 }

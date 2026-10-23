@@ -99,8 +99,13 @@ public sealed class AotStage5B4C1B2BContractTests
         Assert.Contains("CreateItemFlyout(target)", probe, StringComparison.Ordinal);
         Assert.Contains("Common.Properties", probe, StringComparison.Ordinal);
         Assert.Contains("_hostWindowHandle == IntPtr.Zero", probe, StringComparison.Ordinal);
-        Assert.Contains("MenuFlyoutItemAutomationPeer", probe, StringComparison.Ordinal);
-        Assert.Contains("PatternInterface.Invoke", probe, StringComparison.Ordinal);
+        Assert.Contains("AotContextMenuProbe.InvokeProvider", probe, StringComparison.Ordinal);
+        Assert.Contains(
+            "PatternInterface.Invoke",
+            ReadRepositoryFile(
+                "src/DeskBox/Controls/WidgetContents/" +
+                "FileSurfaceContent.AotContextMenuProbe.cs"),
+            StringComparison.Ordinal);
         Assert.Contains("IInvokeProvider", probe, StringComparison.Ordinal);
         Assert.Contains("Task.Run(() =>", probe, StringComparison.Ordinal);
         Assert.Contains("ObserveAndCloseOwnedDialogAsync", probe, StringComparison.Ordinal);
@@ -202,7 +207,7 @@ public sealed class AotStage5B4C1B2BContractTests
         Assert.Contains("stage5B4C1B2BMissingRunnerPatterns", audit, StringComparison.Ordinal);
         Assert.Contains("stage5B4C1B2BForbiddenScopePatterns", audit, StringComparison.Ordinal);
         Assert.Contains("stage5B4C1B2BRustAbiUnchanged", audit, StringComparison.Ordinal);
-        Assert.Contains("stage5B4C1B2BExpectedWmc1510Count = 875", audit, StringComparison.Ordinal);
+        Assert.Contains("stage5B4C1B2BExpectedWmc1510Count = 790", audit, StringComparison.Ordinal);
         Assert.Contains("$RequiredAuditProfileVersion = 59", launcher, StringComparison.Ordinal);
         Assert.Contains("$RequiredSummarySchemaVersion = 55", launcher, StringComparison.Ordinal);
         Assert.Contains("stage 5B-4C3B2B1", project, StringComparison.Ordinal);

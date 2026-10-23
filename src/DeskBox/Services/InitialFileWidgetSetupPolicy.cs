@@ -14,7 +14,12 @@ internal readonly record struct InitialFileWidgetSetupSnapshot(
     bool IsInteractiveLaunch,
     SettingsLoadRecoveryState SettingsLoadState,
     bool HasResolvedSetup,
-    bool HasConfiguredFileWidget);
+    bool HasConfiguredFileWidget,
+    // True only after the user explicitly chose "start fresh" in the
+    // wipe-recovery offer. DefaultsAfterFailure otherwise suppresses widget
+    // creation (a recovery launch must not manufacture widgets); an explicit
+    // fresh start reopens that first-run decision.
+    bool AllowDefaultAfterRecoveryFailure = false);
 
 internal static class InitialFileWidgetSetupPolicy
 {
@@ -22,7 +27,8 @@ internal static class InitialFileWidgetSetupPolicy
         InitialFileWidgetSetupSnapshot snapshot)
     {
         if (snapshot.HasResolvedSetup ||
-            snapshot.SettingsLoadState == SettingsLoadRecoveryState.DefaultsAfterFailure)
+            (snapshot.SettingsLoadState == SettingsLoadRecoveryState.DefaultsAfterFailure &&
+             !snapshot.AllowDefaultAfterRecoveryFailure))
         {
             return InitialFileWidgetSetupDecision.None;
         }

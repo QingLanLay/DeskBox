@@ -13,6 +13,7 @@ public sealed class GlanceWidgetContentAdapter :
     IWidgetResponsiveLayoutContent
 {
     private string? _compactBackgroundPath;
+    private int _compactBackgroundDecodeWidth;
     private ImageSource? _compactBackground;
     private long _compactBackgroundEstimatedBytes;
 
@@ -76,15 +77,17 @@ public sealed class GlanceWidgetContentAdapter :
     {
     }
 
-    public ImageSource? GetCompactBackgroundImage()
+    public ImageSource? GetCompactBackgroundImage(int decodePixelWidth)
     {
         string? path = ViewModel.CurrentImagePath;
-        if (string.Equals(path, _compactBackgroundPath, StringComparison.OrdinalIgnoreCase))
+        if (string.Equals(path, _compactBackgroundPath, StringComparison.OrdinalIgnoreCase) &&
+            _compactBackgroundDecodeWidth == decodePixelWidth)
         {
             return _compactBackground;
         }
 
         _compactBackgroundPath = path;
+        _compactBackgroundDecodeWidth = decodePixelWidth;
         _compactBackground = null;
         SetCompactBackgroundEstimatedBytes(0);
         if (string.IsNullOrWhiteSpace(path) || !File.Exists(path))
@@ -97,12 +100,16 @@ public sealed class GlanceWidgetContentAdapter :
             var bitmap = new BitmapImage
             {
                 DecodePixelType = DecodePixelType.Physical,
-                DecodePixelWidth = 768,
-                UriSource = new Uri(path, UriKind.Absolute)
+                DecodePixelWidth = Math.Max(1, decodePixelWidth)
             };
+            // Streamed like the expanded surface: URI loads would accumulate
+            // one un-evictable framework cache entry per rotation step the
+            // capsule has shown. The bitmap fills in when the decode
+            // completes, matching the URI path's own async first-load.
+            _ = GlanceImageStreamLoader.LoadAsync(bitmap, path);
             _compactBackground = bitmap;
             PerformanceLogger.RecordGlanceCompactBackgroundDecode();
-            SetCompactBackgroundEstimatedBytes(768L * 768 * 4);
+            SetCompactBackgroundEstimatedBytes((long)decodePixelWidth * decodePixelWidth * 4);
         }
         catch (Exception ex)
         {

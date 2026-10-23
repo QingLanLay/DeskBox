@@ -51,6 +51,17 @@ public sealed partial class FileSurfaceContent
                 _ = DispatcherQueue.TryEnqueue(ApplyUniformIconCellSize);
             }
         }
+
+        // Layout settings change what "trimmed" means and where the expanded
+        // overlay may reach; collapse it until the next selection push.
+        if (e.PropertyName is nameof(WidgetViewModel.IconCellWidth) or
+            nameof(WidgetViewModel.IconCellHeight) or
+            nameof(WidgetViewModel.IconLabelMaxLines) or
+            nameof(WidgetViewModel.IconLabelMaxWidth) or
+            nameof(WidgetViewModel.IconLabelFontSize))
+        {
+            HideAllNameExpansions();
+        }
     }
 
     private void FileSurfaceContent_TextScaleFactorChanged()

@@ -71,6 +71,50 @@ public static class AttachmentStorageService
         };
     }
 
+    /// <summary>
+    /// Deletes a managed attachment copy when — and only when — the path is
+    /// provably inside the managed attachment tree. The persisted
+    /// IsManagedCopy flag alone is not proof of ownership: a stale or
+    /// hand-edited store could point that flag at a user's original file, so
+    /// anything outside the managed root is always kept. Deletion delegates
+    /// to the caller's recycle kernel (the file-safety service recycling the
+    /// file); without a kernel the copy is kept — fail-safe.
+    /// </summary>
+    public static async Task<bool> TryDeleteManagedCopyAsync(
+        string filePath,
+        string managedRootDirectory,
+        Func<string, Task<bool>>? recycleFileAsync)
+    {
+        try
+        {
+            string fullRoot = Path.GetFullPath(managedRootDirectory)
+                .TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar) +
+                Path.DirectorySeparatorChar;
+            string fullPath = Path.GetFullPath(filePath);
+            if (!fullPath.StartsWith(fullRoot, StringComparison.OrdinalIgnoreCase) ||
+                !File.Exists(fullPath))
+            {
+                App.Log(
+                    $"[AttachmentStorage] Kept attachment file outside the managed tree: '{filePath}'");
+                return false;
+            }
+
+            if (recycleFileAsync is null)
+            {
+                App.Log(
+                    $"[AttachmentStorage] No recycle kernel available; kept managed attachment copy: '{filePath}'");
+                return false;
+            }
+
+            return await recycleFileAsync(fullPath);
+        }
+        catch (Exception ex)
+        {
+            App.Log($"[AttachmentStorage] Failed to delete managed attachment '{filePath}': {ex.Message}");
+            return false;
+        }
+    }
+
     private static TodoAttachment CreateAttachment(string path, string storageMode)
     {
         return new TodoAttachment

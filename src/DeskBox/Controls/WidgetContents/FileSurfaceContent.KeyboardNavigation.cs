@@ -4,6 +4,7 @@ using DeskBox.Platform;
 using DeskBox.ViewModels;
 using Microsoft.UI.Xaml;
 using Microsoft.UI.Xaml.Controls;
+using Microsoft.UI.Xaml.Controls.Primitives;
 using Microsoft.UI.Xaml.Input;
 
 namespace DeskBox.Controls.WidgetContents;
@@ -105,7 +106,7 @@ public sealed partial class FileSurfaceContent
             return;
         }
 
-        MenuFlyout flyout = selectedItems.Count switch
+        FlyoutBase flyout = selectedItems.Count switch
         {
             0 => CreateContentAreaFlyout(),
             > 1 => CreateMultiSelectionFlyout(),

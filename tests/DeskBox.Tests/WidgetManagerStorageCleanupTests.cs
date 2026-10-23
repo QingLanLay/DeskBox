@@ -341,6 +341,32 @@ public sealed class WidgetManagerStorageCleanupTests : IDisposable
     }
 
     [Fact]
+    public async Task RemoveWidgetAsync_FailedMoveBackToDesktop_KeepsWidgetAndFiles()
+    {
+        // A move-back that cannot complete must surface its failure with the
+        // widget fully intact — never a silent half-on-desktop, half-in-folder
+        // state behind an already-removed widget.
+        string managedFolder = Directory.CreateDirectory(Path.Combine(_storageRoot, "Stuck")).FullName;
+        string sourcePath = Path.Combine(managedFolder, "note.txt");
+        File.WriteAllText(sourcePath, "managed");
+        var widget = CreateManagedWidget("Stuck", managedFolder);
+        _settingsService.Settings.Widgets.Add(widget);
+
+        // Make the desktop destination unusable: a file where the desktop
+        // directory should be makes every planned move fail.
+        Directory.Delete(_desktopRoot);
+        File.WriteAllText(_desktopRoot, "not a directory");
+
+        await Assert.ThrowsAnyAsync<Exception>(() =>
+            _widgetManager.RemoveWidgetAsync(
+                widget.Id,
+                WidgetRemovalAction.MoveManagedFolderContentsToDesktop));
+
+        Assert.Contains(_settingsService.Settings.Widgets, item => item.Id == widget.Id);
+        Assert.True(File.Exists(sourcePath));
+    }
+
+    [Fact]
     public async Task RemoveWidgetAsync_MissingManagedFolder_RemovesConfigWithoutCreatingFolder()
     {
         string missingFolder = Path.Combine(_storageRoot, "Missing");

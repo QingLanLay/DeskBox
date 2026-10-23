@@ -66,7 +66,10 @@ public sealed partial class TodoWidgetContent
             return;
         }
 
-        DeskBoxDragData.SetTodoColorMarker(e.Data, colorMarker);
+        // 颜色是进程内状态，走字段直传：OLE 自定义格式只能异步读（Drop 里
+        // 无 deferral 的 await 曾致丢/挂），且拖过桌面时会被 shell 逐格式
+        // 探测（0x8000FFFF 崩溃向量）。镜像 _draggedTodoItemId 先例。
+        _draggedColorMarker = colorMarker;
         e.Data.RequestedOperation = DataPackageOperation.Link;
         e.Data.Properties.Title = App.Current.LocalizationService.T(
             TodoItem.GetColorMarkerLocalizationKey(colorMarker));
@@ -139,19 +142,26 @@ public sealed partial class TodoWidgetContent
         _isStartingColorFilterDrag = true;
         _suppressColorFilterClickUntil = DateTimeOffset.UtcNow.AddMilliseconds(500);
         e.Handled = true;
+        // 常开日志：色点拖拽一旦在原生管线内炸掉会带走整个进程且无堆栈
+        // （#528/#565 两次定案都丢了帧），起点和落点必须留在日志里。
+        string dragColor = button.Tag as string ?? "unknown";
+        App.Log($"[Todo] Color marker drag start color={dragColor}");
         try
         {
-            await button.StartDragAsync(e.GetCurrentPoint(button));
+            DataPackageOperation outcome = await button.StartDragAsync(e.GetCurrentPoint(button));
+            App.Log($"[Todo] Color marker drag completed color={dragColor} outcome={outcome}");
         }
         catch (Exception ex)
         {
-            App.Log($"[Todo] Failed to start color marker drag: {ex.Message}");
+            App.Log($"[Todo] Failed to start color marker drag color={dragColor}: {ex.Message}");
         }
         finally
         {
             _suppressColorFilterClickUntil = DateTimeOffset.UtcNow.AddMilliseconds(350);
             _pressedColorFilterButton = null;
             _isStartingColorFilterDrag = false;
+            // StartDragAsync 返回即拖拽已终结（无论落点）：清掉进程内标记兜底。
+            _draggedColorMarker = null;
         }
     }
 
@@ -192,7 +202,7 @@ public sealed partial class TodoWidgetContent
 
         ClearTodoReorderDropState();
 
-        if (e.DataView.Contains(DeskBoxDragData.TodoColorMarkerFormat))
+        if (_draggedColorMarker is not null)
         {
             e.Handled = true;
             e.AcceptedOperation = DataPackageOperation.Link;
@@ -226,7 +236,7 @@ public sealed partial class TodoWidgetContent
             return;
         }
 
-        if (e.DataView.Contains(DeskBoxDragData.TodoColorMarkerFormat) ||
+        if (_draggedColorMarker is not null ||
             DeskBoxDragData.HasDroppedFiles(e.DataView))
         {
             e.Handled = true;
@@ -252,12 +262,13 @@ public sealed partial class TodoWidgetContent
             return;
         }
 
-        if (e.DataView.Contains(DeskBoxDragData.TodoColorMarkerFormat))
+        if (_draggedColorMarker is { } dragColor)
         {
             e.Handled = true;
             SetTodoItemHoverState(border, false);
-            string? colorMarker = TodoItem.NormalizeColorMarker(
-                await DeskBoxDragData.TryGetTodoColorMarkerAsync(e.DataView));
+            // 同步取走标记再 yield：拖拽事务随时可能在首个 await 后终结。
+            _draggedColorMarker = null;
+            string? colorMarker = TodoItem.NormalizeColorMarker(dragColor);
             if (colorMarker is null)
             {
                 e.AcceptedOperation = DataPackageOperation.None;
@@ -265,9 +276,26 @@ public sealed partial class TodoWidgetContent
                 return;
             }
 
-            await ViewModel.SetColorMarkerAsync(item.Id, colorMarker);
-            e.AcceptedOperation = DataPackageOperation.Link;
-            ResetTodoReorderVisualState();
+            // 存盘要 await：deferral 保住拖拽事务与源侧结果；ResilientJsonStore
+            // 只重试一种 IOException，其余存盘异常在 async void 里上抛即全局
+            // 故障，catch 收敛为日志。
+            var colorDeferral = e.GetDeferral();
+            try
+            {
+                await ViewModel.SetColorMarkerAsync(item.Id, colorMarker);
+                App.Log($"[Todo] Color marker drop applied color={colorMarker}");
+                e.AcceptedOperation = DataPackageOperation.Link;
+            }
+            catch (Exception ex)
+            {
+                App.Log($"[Todo] Color marker drop failed color={colorMarker}: {ex.Message}");
+                e.AcceptedOperation = DataPackageOperation.None;
+            }
+            finally
+            {
+                colorDeferral.Complete();
+                ResetTodoReorderVisualState();
+            }
             return;
         }
 

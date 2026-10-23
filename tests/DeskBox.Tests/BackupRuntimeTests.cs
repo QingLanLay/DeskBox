@@ -159,6 +159,25 @@ public sealed class BackupRuntimeTests
     }
 
     [Fact]
+    public async Task SettingsRefresh_UnchangedOptions_SkipsEvaluationUntilNextTick()
+    {
+        // Every settings save (monitor toggles, text size, anything) funnels
+        // into RefreshOptions; when the effective backup options did not
+        // change there must be no evaluation at all — the minute timer is
+        // the fallback that still picks the schedule up.
+        var backend = new FakeBackend { LocalEnabled = true, RefreshChanged = false };
+        var timer = new FakeTimer();
+        await using var runtime = new BackupRuntime(backend, timer, _ => { });
+        runtime.Start();
+        runtime.RefreshOptions(checkSchedule: true);
+        Assert.Equal(1, backend.Refreshes);
+        Assert.Equal(0, backend.LocalCalls + backend.CloudCalls);
+        timer.Fire();
+        await runtime.LastScheduledCheck;
+        Assert.Equal(1, backend.LocalCalls);
+    }
+
+    [Fact]
     public async Task FlushFailure_PreventsManualBackupAndRemainsAFailure()
     {
         var backend = new FakeBackend { Prepare = _ => Task.FromException(new IOException("settings flush failed")) };
@@ -199,6 +218,7 @@ public sealed class BackupRuntimeTests
         public bool LocalScheduleEnabled => LocalEnabled;
         public bool CloudScheduleEnabled => CloudEnabled;
         public int Refreshes { get; private set; }
+        public bool RefreshChanged { get; set; } = true;
         public int Preparations { get; private set; }
         public int LocalCalls { get; private set; }
         public int CloudCalls { get; private set; }
@@ -206,7 +226,7 @@ public sealed class BackupRuntimeTests
         public Func<CancellationToken, Task> Prepare { get; init; } = _ => Task.CompletedTask;
         public Func<bool, CancellationToken, Task<LocalBackupResult>> LocalWork { get; set; } = (_, _) => Task.FromResult(new LocalBackupResult(BackupOutcome.Skipped));
         public Func<bool, CancellationToken, Task<CloudBackupRunResult>> CloudWork { get; init; } = (_, _) => Task.FromResult(new CloudBackupRunResult(false, null, 0));
-        public void RefreshOptions() { Refreshes++; Refresh?.Invoke(); }
+        public bool RefreshOptions() { Refreshes++; Refresh?.Invoke(); return RefreshChanged; }
         public Task PrepareManualBackupAsync(CancellationToken token) { Preparations++; return Prepare(token); }
         public Task<LocalBackupResult> CreateSnapshotAsync(bool force, CancellationToken token) { LocalCalls++; return LocalWork(force, token); }
         public Task<string> ExportAsync(string path, CancellationToken token) => Task.FromResult(path);

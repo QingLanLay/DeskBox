@@ -34,18 +34,29 @@ internal sealed class AppLifecycleRecoveryWatcher : IDisposable
     internal bool IsSessionAvailable => _sessionState.IsSessionAvailable;
     internal long SessionGeneration { get; private set; }
 
+    /// <summary>
+    /// Optional gate-event sink (spec 5.6): receives "session-locked" /
+    /// "session-unlocked" / "display-power-off" / "display-power-on" so the
+    /// topology gate can park restores while the session is locked or the
+    /// screen is off. Separate from the recovery action on purpose — gate
+    /// events must never schedule a restore by themselves.
+    /// </summary>
+    private readonly Action<string>? _gateEventAction;
+
     public AppLifecycleRecoveryWatcher(
         IntPtr hWnd,
         DispatcherQueue dispatcherQueue,
         Action<string> recoveryAction,
         Action<string>? endSessionAction = null,
-        Action<bool>? sessionStateChangedAction = null)
+        Action<bool>? sessionStateChangedAction = null,
+        Action<string>? gateEventAction = null)
     {
         _hWnd = hWnd;
         _recoveryAction = recoveryAction;
         _endSessionAction = endSessionAction;
         _sessionStateChangedAction = sessionStateChangedAction;
-        _subclassProc = WindowSubclassProc;
+        _gateEventAction = gateEventAction;
+        _subclassProc = CallbackDepth.WrapSubclassProc(WindowSubclassProc);
         _timer = dispatcherQueue.CreateTimer();
         _timer.Interval = RecoveryDelay;
         _timer.IsRepeating = false;
@@ -108,12 +119,8 @@ internal sealed class AppLifecycleRecoveryWatcher : IDisposable
         UIntPtr refData)
     {
         bool sessionWasAvailable = _sessionState.IsSessionAvailable;
-        string? recoveryReason =
-            _sessionState.Observe(
-                message,
-                wParam,
-                lParam,
-                s_taskbarCreatedMessage);
+        string? recoveryReason = _sessionState.Observe(
+            message, wParam, lParam, s_taskbarCreatedMessage);
         if (sessionWasAvailable != _sessionState.IsSessionAvailable)
         {
             SessionGeneration++;
@@ -123,21 +130,24 @@ internal sealed class AppLifecycleRecoveryWatcher : IDisposable
             App.Log($"[Lifecycle] Session available={_sessionState.IsSessionAvailable}; pending recovery reset.");
         }
 
-        if (recoveryReason is not null)
+        // Gate signals must survive the noninteractive state that suppresses
+        // recovery. Screen-off closes the gate without scheduling a restore.
+        RaiseGateEvent(AppLifecycleRecoverySignalClassifier.ResolveGateEvent(
+            message, wParam, lParam, _sessionState.IsSessionAvailable));
+        if (recoveryReason is not null && recoveryReason != "display-power-off")
         {
             QueueRecovery(recoveryReason);
         }
-        else if (message == WmQueryEndSession)
+
+        if (message == WmQueryEndSession)
         {
             InvokeEndSessionAction("query-end-session");
             return new IntPtr(1);
         }
-        else if (message == WmEndSession)
+
+        if (message == WmEndSession && wParam != UIntPtr.Zero)
         {
-            if (wParam != UIntPtr.Zero)
-            {
-                InvokeEndSessionAction("end-session");
-            }
+            InvokeEndSessionAction("end-session");
         }
         else if (message == WmNcDestroy)
         {
@@ -163,6 +173,23 @@ internal sealed class AppLifecycleRecoveryWatcher : IDisposable
     {
         try { _sessionStateChangedAction?.Invoke(available); }
         catch (Exception ex) { App.Log($"[Lifecycle] Session availability callback failed: {ex}"); }
+    }
+
+    private void RaiseGateEvent(string? eventName)
+    {
+        if (eventName is null)
+        {
+            return;
+        }
+
+        try
+        {
+            _gateEventAction?.Invoke(eventName);
+        }
+        catch (Exception ex)
+        {
+            App.Log($"[Lifecycle] Gate event '{eventName}' failed: {ex.Message}");
+        }
     }
 
     private void QueueRecovery(string reason)

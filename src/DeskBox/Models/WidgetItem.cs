@@ -94,6 +94,44 @@ public partial class WidgetItem : ObservableObject
     [ObservableProperty]
     public partial bool IsStackChild { get; set; }
 
+    /// <summary>
+    /// Icon freshness ledger (internal, never bound): the file size and
+    /// timestamp captured when <see cref="Icon"/> was extracted. Refresh
+    /// merges compare these against the incoming snapshot; a mismatch means
+    /// the file changed out-of-band and the icon reference must drop so the
+    /// hydration universe re-fetches with the new cache key. Defaults make
+    /// unstamped icons compare stale — one redundant re-fetch, then stable.
+    /// </summary>
+    internal long HydratedIconFileSize { get; set; } = -1;
+
+    internal DateTime HydratedIconStamp { get; set; }
+
+    /// <summary>
+    /// Shortcut-target freshness (internal, never bound): set once the
+    /// shell link's stored target has been read; a failed (empty) read
+    /// stays unloaded so later generations retry. Merge snapshots never
+    /// read targets, so this flag is never copied from them.
+    /// </summary>
+    internal bool IsShortcutTargetLoaded { get; set; }
+
+    /// <summary>
+    /// Namespace classification (internal, never bound): filled by
+    /// <c>NamespaceShortcutHelper.ResolveKind</c> on first menu build. A
+    /// PIDL-only namespace link (This PC, Recycle Bin, Control Panel, …)
+    /// changes which native verbs the item menu offers.
+    /// </summary>
+    internal NamespaceShortcutKind NamespaceShortcutKind { get; set; } =
+        NamespaceShortcutKind.None;
+
+    /// <summary>
+    /// The namespace target's parsing name when
+    /// <see cref="NamespaceShortcutKind"/> is not None (empty otherwise),
+    /// kept so verbs can re-materialize the same target.
+    /// </summary>
+    internal string NamespaceShortcutParsingName { get; set; } = string.Empty;
+
+    internal bool IsNamespaceShortcutKindResolved { get; set; }
+
     public string SecondaryInfo
     {
         get

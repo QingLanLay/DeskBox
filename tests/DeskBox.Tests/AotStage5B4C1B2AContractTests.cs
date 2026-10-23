@@ -60,8 +60,17 @@ public sealed class AotStage5B4C1B2AContractTests
         Assert.Contains("ownerWindowHandle);", viewModel, StringComparison.Ordinal);
         Assert.Contains("IntPtr ownerWindowHandle = default", organizer, StringComparison.Ordinal);
         Assert.Contains("ownerWindowHandle);", organizer, StringComparison.Ordinal);
-        Assert.Contains("WindowHandle = ownerWindowHandle", fileService, StringComparison.Ordinal);
-        Assert.Contains("SHFileOperation(ref fileOperation)", fileService, StringComparison.Ordinal);
+        // The owner HWND reaches the Shell through the modern engine's
+        // SetOwnerWindow; the legacy ShFileOperation owner assignment was
+        // retired with the bridge (2026-10-13). The delete channel keeps
+        // its own shell call.
+        string shellTransfer = ReadRepositoryFile(
+            "src/DeskBox/Services/FileService.ShellTransfer.cs");
+        Assert.Contains(
+            "fileOperation.SetOwnerWindow(ownerWindowHandle)",
+            shellTransfer,
+            StringComparison.Ordinal);
+        Assert.Contains("SHFileOperation(ref operation)", fileService, StringComparison.Ordinal);
     }
 
     [Fact]
@@ -74,8 +83,13 @@ public sealed class AotStage5B4C1B2AContractTests
         Assert.Contains("CreateMultiSelectionFlyout()", probe, StringComparison.Ordinal);
         Assert.Contains("Widget.MoveBackToDesktop", probe, StringComparison.Ordinal);
         Assert.Contains("_hostWindowHandle.ToInt64()", probe, StringComparison.Ordinal);
-        Assert.Contains("MenuFlyoutItemAutomationPeer", probe, StringComparison.Ordinal);
-        Assert.Contains("PatternInterface.Invoke", probe, StringComparison.Ordinal);
+        Assert.Contains("AotContextMenuProbe.InvokeProvider", probe, StringComparison.Ordinal);
+        Assert.Contains(
+            "PatternInterface.Invoke",
+            ReadRepositoryFile(
+                "src/DeskBox/Controls/WidgetContents/" +
+                "FileSurfaceContent.AotContextMenuProbe.cs"),
+            StringComparison.Ordinal);
         Assert.Contains("IInvokeProvider", probe, StringComparison.Ordinal);
         Assert.Contains("invokeProvider.Invoke()", probe, StringComparison.Ordinal);
         Assert.Contains("FeedbackRequested += OnFeedbackRequested", probe, StringComparison.Ordinal);
@@ -86,19 +100,41 @@ public sealed class AotStage5B4C1B2AContractTests
     [Fact]
     public void FileService_PreservesRealShellPathAndRecordsAllReturnBranches()
     {
-        string fileService = ReadRepositoryFile("src/DeskBox/Services/FileService.cs");
+        string shellTransfer = ReadRepositoryFile(
+            "src/DeskBox/Services/FileService.ShellTransfer.cs");
         string fixture = ReadRepositoryFile("src/DeskBox/Services/AotShellMoveFixture.cs");
 
-        Assert.Contains("MoveEntriesWithShellProgress(", fileService, StringComparison.Ordinal);
-        Assert.Contains("AotShellMoveFixture.TryExecute", fileService, StringComparison.Ordinal);
-        Assert.Contains("AotShellMoveFixture.GetRecoveryProbeDelay", fileService, StringComparison.Ordinal);
-        Assert.Contains("AotShellMoveFixture.ReturnedOutcome", fileService, StringComparison.Ordinal);
-        Assert.Contains("AotShellMoveFixture.RecoveredPendingOutcome", fileService, StringComparison.Ordinal);
-        Assert.Contains("AotShellMoveFixture.ExtendedWaitOutcome", fileService, StringComparison.Ordinal);
-        Assert.Contains("TimeSpan.FromSeconds(15)", fileService, StringComparison.Ordinal);
-        Assert.Contains("TimeSpan.FromMilliseconds(150)", fixture, StringComparison.Ordinal);
-        Assert.Contains("Thread.Sleep(800)", fixture, StringComparison.Ordinal);
-        Assert.Contains("FileService.IsCompletedShellMove", fixture, StringComparison.Ordinal);
+        // The persistence hooks moved to the modern engine (2026-10-13):
+        // capture + simulated-throw inside the engine's outcome try, and
+        // the Real-mode completion report at the success return.
+        Assert.Contains(
+            "AotShellMoveFixture.TryCaptureModernTransfer",
+            shellTransfer,
+            StringComparison.Ordinal);
+        Assert.Contains(
+            "AotShellMoveFixture.ThrowSimulatedModernOutcome",
+            shellTransfer,
+            StringComparison.Ordinal);
+        Assert.Contains(
+            "AotShellMoveFixture.RecordModernRealCompletion",
+            shellTransfer,
+            StringComparison.Ordinal);
+        Assert.Contains(
+            "internal const string AbandonedButCompletedOutcome",
+            fixture,
+            StringComparison.Ordinal);
+        Assert.Contains(
+            "StaOperationAbandonedException(",
+            fixture,
+            StringComparison.Ordinal);
+        Assert.Contains(
+            "FileService.FileTransferCanceledException(",
+            fixture,
+            StringComparison.Ordinal);
+        Assert.Contains(
+            "FileService.IsCompletedShellMove",
+            fixture,
+            StringComparison.Ordinal);
     }
 
     [Fact]
@@ -107,7 +143,7 @@ public sealed class AotStage5B4C1B2AContractTests
         string fixture = ReadRepositoryFile("src/DeskBox/Services/AotShellMoveFixture.cs");
 
         Assert.Contains("case RealMode", fixture, StringComparison.Ordinal);
-        Assert.Contains("executeRealShellMove()", fixture, StringComparison.Ordinal);
+        Assert.Contains("proceedWithRealEngine = true", fixture, StringComparison.Ordinal);
         Assert.Contains("case PartialMode", fixture, StringComparison.Ordinal);
         Assert.Contains("paths.PartialFirstSourcePath", fixture, StringComparison.Ordinal);
         Assert.Contains("case CancelMode", fixture, StringComparison.Ordinal);
@@ -126,9 +162,10 @@ public sealed class AotStage5B4C1B2AContractTests
 
         Assert.Equal(4, CountOccurrences(scenario, "InvokeAotShellMoveBackToDesktopAsync("));
         Assert.Contains("ShellMoveMenuMatrixCompleted", scenario, StringComparison.Ordinal);
-        Assert.Contains("LateTaskPendingWhenProductReturned", scenario, StringComparison.Ordinal);
-        Assert.Contains("RecoveredPendingOutcome", scenario, StringComparison.Ordinal);
-        Assert.Contains("[1, 0, 1, 1]", scenario, StringComparison.Ordinal);
+        Assert.Contains("AbandonedButCompleted", scenario, StringComparison.Ordinal);
+        Assert.Contains("AbandonedButCompletedOutcome", scenario, StringComparison.Ordinal);
+        Assert.Contains("[1, 1, 1]", scenario, StringComparison.Ordinal);
+        Assert.Contains("[true, false, false]", scenario, StringComparison.Ordinal);
         Assert.Contains("case \"VerifyRestore\"", scenario, StringComparison.Ordinal);
         Assert.Contains("case \"Postflight\"", scenario, StringComparison.Ordinal);
         Assert.Contains("case \"Compensate\"", scenario, StringComparison.Ordinal);

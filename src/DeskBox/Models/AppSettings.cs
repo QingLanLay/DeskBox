@@ -292,6 +292,9 @@ public class AppSettings
     /// <inheritdoc cref="MusicSettingsSlice.MusicDisplayMode"/>
     public string MusicDisplayMode { get => Music.MusicDisplayMode; set => Music.MusicDisplayMode = value; }
 
+    /// <inheritdoc cref="MusicSettingsSlice.MusicHideTimelineWhenUnavailable"/>
+    public bool MusicHideTimelineWhenUnavailable { get => Music.MusicHideTimelineWhenUnavailable; set => Music.MusicHideTimelineWhenUnavailable = value; }
+
     /// <inheritdoc cref="QuickCaptureSettingsSlice.LastQuickCaptureFileWidgetId"/>
     public string LastQuickCaptureFileWidgetId { get => QuickCapture.LastQuickCaptureFileWidgetId; set => QuickCapture.LastQuickCaptureFileWidgetId = value; }
 
@@ -608,6 +611,27 @@ public class AppSettings
     /// <inheritdoc cref="WidgetLayoutSettingsSlice.Widgets"/>
     public List<WidgetConfig> Widgets { get => WidgetLayout.Widgets; set => WidgetLayout.Widgets = value; }
 
+    /// <inheritdoc cref="WidgetLayoutSettingsSlice.WidgetDefaultBoundScreenId"/>
+    public string? WidgetDefaultBoundScreenId
+    {
+        get => WidgetLayout.WidgetDefaultBoundScreenId;
+        set => WidgetLayout.WidgetDefaultBoundScreenId = value;
+    }
+
+    /// <inheritdoc cref="WidgetLayoutSettingsSlice.WidgetNewPlacementTarget"/>
+    public string WidgetNewPlacementTarget
+    {
+        get => WidgetLayout.WidgetNewPlacementTarget;
+        set => WidgetLayout.WidgetNewPlacementTarget = value;
+    }
+
+    /// <inheritdoc cref="WidgetLayoutSettingsSlice.WidgetDisplayDisconnectBehavior"/>
+    public string WidgetDisplayDisconnectBehavior
+    {
+        get => WidgetLayout.WidgetDisplayDisconnectBehavior;
+        set => WidgetLayout.WidgetDisplayDisconnectBehavior = value;
+    }
+
     /// <inheritdoc cref="WidgetLayoutSettingsSlice.WidgetGroups"/>
     public List<WidgetGroupConfig> WidgetGroups { get => WidgetLayout.WidgetGroups; set => WidgetLayout.WidgetGroups = value; }
 
@@ -631,6 +655,9 @@ public class AppSettings
 
     /// <inheritdoc cref="WidgetLayoutSettingsSlice.WidgetGroupHoverSwitchEnabled"/>
     public bool WidgetGroupHoverSwitchEnabled { get => WidgetLayout.WidgetGroupHoverSwitchEnabled; set => WidgetLayout.WidgetGroupHoverSwitchEnabled = value; }
+
+    /// <inheritdoc cref="WidgetLayoutSettingsSlice.WidgetGroupSwitchAnimationStyle"/>
+    public string WidgetGroupSwitchAnimationStyle { get => WidgetLayout.WidgetGroupSwitchAnimationStyle; set => WidgetLayout.WidgetGroupSwitchAnimationStyle = value; }
 
     /// <inheritdoc cref="WidgetShellSettingsSlice.FocusClickedWidgetOnRaise"/>
     public bool FocusClickedWidgetOnRaise { get => WidgetShell.FocusClickedWidgetOnRaise; set => WidgetShell.FocusClickedWidgetOnRaise = value; }

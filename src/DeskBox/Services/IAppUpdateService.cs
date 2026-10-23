@@ -22,5 +22,8 @@ public interface IAppUpdateService
         AppUpdateManifest manifest,
         IProgress<AppUpdateDownloadProgress>? progress = null,
         CancellationToken cancellationToken = default);
-    AppUpdateInstallResult StartInstallerHelper(string installerPath, bool silent = true);
+    AppUpdateInstallResult StartInstallerHelper(
+        string installerPath,
+        bool silent = true,
+        string? appCultureName = null);
 }

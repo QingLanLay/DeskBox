@@ -4,6 +4,7 @@
     xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
     xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
     xmlns:controls="using:DeskBox.Controls"
+    xmlns:helpers="using:DeskBox.Helpers"
     xmlns:toolkit="using:CommunityToolkit.WinUI.Controls"
     xmlns:d="http://schemas.microsoft.com/expression/blend/2008"
     xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
@@ -11,7 +12,8 @@
     KeyDown="TodoWidgetContent_KeyDown"
     IsTabStop="True"
     SizeChanged="TodoWidgetContent_SizeChanged"
-    mc:Ignorable="d">
+    mc:Ignorable="d"
+    xmlns:svc="using:DeskBox.Services">
 
     <UserControl.Resources>
         <x:Double x:Key="TodoDetailActionIconSize">13</x:Double>
@@ -183,15 +185,19 @@
                 </toolkit:SegmentedItem>
             </toolkit:Segmented>
 
+            <!-- 色点拖拽只走 PointerMoved 里的手工 StartDragAsync（见 DragDrop.cs）。
+                 CanDrag 必须保持关闭：native 手势初始化与手工启动叠加会在拖拽管线
+                 内部抛 COMException 0x8000FFFF 直接杀死进程（#528/#565 两例实锤），
+                 同模式先例见 WidgetGroupTitleSwitcher.ApplyNavigationStyle。 -->
             <StackPanel Orientation="Horizontal" Spacing="3" Visibility="{Binding ColorFilterVisibility}">
-                <Button x:Name="RedColorFilterButton" AutomationProperties.Name="{Binding RedColorText}" CanDrag="True" Click="RedColorFilterButton_Click" DragStarting="ColorFilterButton_DragStarting" PointerCaptureLost="ColorFilterButton_PointerCaptureLost" PointerMoved="ColorFilterButton_PointerMoved" PointerPressed="ColorFilterButton_PointerPressed" PointerReleased="ColorFilterButton_PointerReleased" Style="{StaticResource TodoColorFilterButtonStyle}" Tag="red" ToolTipService.ToolTip="{Binding RedColorText}"><Border Width="14" Height="6" Background="#E34D4D" CornerRadius="3" /></Button>
-                <Button x:Name="OrangeColorFilterButton" AutomationProperties.Name="{Binding OrangeColorText}" CanDrag="True" Click="OrangeColorFilterButton_Click" DragStarting="ColorFilterButton_DragStarting" PointerCaptureLost="ColorFilterButton_PointerCaptureLost" PointerMoved="ColorFilterButton_PointerMoved" PointerPressed="ColorFilterButton_PointerPressed" PointerReleased="ColorFilterButton_PointerReleased" Style="{StaticResource TodoColorFilterButtonStyle}" Tag="orange" ToolTipService.ToolTip="{Binding OrangeColorText}"><Border Width="14" Height="6" Background="#F08A3C" CornerRadius="3" /></Button>
-                <Button x:Name="YellowColorFilterButton" AutomationProperties.Name="{Binding YellowColorText}" CanDrag="True" Click="YellowColorFilterButton_Click" DragStarting="ColorFilterButton_DragStarting" PointerCaptureLost="ColorFilterButton_PointerCaptureLost" PointerMoved="ColorFilterButton_PointerMoved" PointerPressed="ColorFilterButton_PointerPressed" PointerReleased="ColorFilterButton_PointerReleased" Style="{StaticResource TodoColorFilterButtonStyle}" Tag="yellow" ToolTipService.ToolTip="{Binding YellowColorText}"><Border Width="14" Height="6" Background="#F2C94C" CornerRadius="3" /></Button>
-                <Button x:Name="GreenColorFilterButton" AutomationProperties.Name="{Binding GreenColorText}" CanDrag="True" Click="GreenColorFilterButton_Click" DragStarting="ColorFilterButton_DragStarting" PointerCaptureLost="ColorFilterButton_PointerCaptureLost" PointerMoved="ColorFilterButton_PointerMoved" PointerPressed="ColorFilterButton_PointerPressed" PointerReleased="ColorFilterButton_PointerReleased" Style="{StaticResource TodoColorFilterButtonStyle}" Tag="green" ToolTipService.ToolTip="{Binding GreenColorText}"><Border Width="14" Height="6" Background="#4CAF6D" CornerRadius="3" /></Button>
-                <Button x:Name="BlueColorFilterButton" AutomationProperties.Name="{Binding BlueColorText}" CanDrag="True" Click="BlueColorFilterButton_Click" DragStarting="ColorFilterButton_DragStarting" PointerCaptureLost="ColorFilterButton_PointerCaptureLost" PointerMoved="ColorFilterButton_PointerMoved" PointerPressed="ColorFilterButton_PointerPressed" PointerReleased="ColorFilterButton_PointerReleased" Style="{StaticResource TodoColorFilterButtonStyle}" Tag="blue" ToolTipService.ToolTip="{Binding BlueColorText}"><Border Width="14" Height="6" Background="#4D8FE3" CornerRadius="3" /></Button>
-                <Button x:Name="PurpleColorFilterButton" AutomationProperties.Name="{Binding PurpleColorText}" CanDrag="True" Click="PurpleColorFilterButton_Click" DragStarting="ColorFilterButton_DragStarting" PointerCaptureLost="ColorFilterButton_PointerCaptureLost" PointerMoved="ColorFilterButton_PointerMoved" PointerPressed="ColorFilterButton_PointerPressed" PointerReleased="ColorFilterButton_PointerReleased" Style="{StaticResource TodoColorFilterButtonStyle}" Tag="purple" ToolTipService.ToolTip="{Binding PurpleColorText}"><Border Width="14" Height="6" Background="#9B6BE8" CornerRadius="3" /></Button>
-                <Button x:Name="TealColorFilterButton" AutomationProperties.Name="{Binding TealColorText}" CanDrag="True" Click="TealColorFilterButton_Click" DragStarting="ColorFilterButton_DragStarting" PointerCaptureLost="ColorFilterButton_PointerCaptureLost" PointerMoved="ColorFilterButton_PointerMoved" PointerPressed="ColorFilterButton_PointerPressed" PointerReleased="ColorFilterButton_PointerReleased" Style="{StaticResource TodoColorFilterButtonStyle}" Tag="teal" ToolTipService.ToolTip="{Binding TealColorText}"><Border Width="14" Height="6" Background="#2DB7A3" CornerRadius="3" /></Button>
-                <Button x:Name="PinkColorFilterButton" AutomationProperties.Name="{Binding PinkColorText}" CanDrag="True" Click="PinkColorFilterButton_Click" DragStarting="ColorFilterButton_DragStarting" PointerCaptureLost="ColorFilterButton_PointerCaptureLost" PointerMoved="ColorFilterButton_PointerMoved" PointerPressed="ColorFilterButton_PointerPressed" PointerReleased="ColorFilterButton_PointerReleased" Style="{StaticResource TodoColorFilterButtonStyle}" Tag="pink" ToolTipService.ToolTip="{Binding PinkColorText}"><Border Width="14" Height="6" Background="#E66AA2" CornerRadius="3" /></Button>
+                <Button x:Name="RedColorFilterButton" AutomationProperties.Name="{Binding RedColorText}" Click="RedColorFilterButton_Click" DragStarting="ColorFilterButton_DragStarting" PointerCaptureLost="ColorFilterButton_PointerCaptureLost" PointerMoved="ColorFilterButton_PointerMoved" PointerPressed="ColorFilterButton_PointerPressed" PointerReleased="ColorFilterButton_PointerReleased" Style="{StaticResource TodoColorFilterButtonStyle}" Tag="red" ToolTipService.ToolTip="{Binding RedColorText}"><Border Width="14" Height="6" Background="#E34D4D" CornerRadius="3" /></Button>
+                <Button x:Name="OrangeColorFilterButton" AutomationProperties.Name="{Binding OrangeColorText}" Click="OrangeColorFilterButton_Click" DragStarting="ColorFilterButton_DragStarting" PointerCaptureLost="ColorFilterButton_PointerCaptureLost" PointerMoved="ColorFilterButton_PointerMoved" PointerPressed="ColorFilterButton_PointerPressed" PointerReleased="ColorFilterButton_PointerReleased" Style="{StaticResource TodoColorFilterButtonStyle}" Tag="orange" ToolTipService.ToolTip="{Binding OrangeColorText}"><Border Width="14" Height="6" Background="#F08A3C" CornerRadius="3" /></Button>
+                <Button x:Name="YellowColorFilterButton" AutomationProperties.Name="{Binding YellowColorText}" Click="YellowColorFilterButton_Click" DragStarting="ColorFilterButton_DragStarting" PointerCaptureLost="ColorFilterButton_PointerCaptureLost" PointerMoved="ColorFilterButton_PointerMoved" PointerPressed="ColorFilterButton_PointerPressed" PointerReleased="ColorFilterButton_PointerReleased" Style="{StaticResource TodoColorFilterButtonStyle}" Tag="yellow" ToolTipService.ToolTip="{Binding YellowColorText}"><Border Width="14" Height="6" Background="#F2C94C" CornerRadius="3" /></Button>
+                <Button x:Name="GreenColorFilterButton" AutomationProperties.Name="{Binding GreenColorText}" Click="GreenColorFilterButton_Click" DragStarting="ColorFilterButton_DragStarting" PointerCaptureLost="ColorFilterButton_PointerCaptureLost" PointerMoved="ColorFilterButton_PointerMoved" PointerPressed="ColorFilterButton_PointerPressed" PointerReleased="ColorFilterButton_PointerReleased" Style="{StaticResource TodoColorFilterButtonStyle}" Tag="green" ToolTipService.ToolTip="{Binding GreenColorText}"><Border Width="14" Height="6" Background="#4CAF6D" CornerRadius="3" /></Button>
+                <Button x:Name="BlueColorFilterButton" AutomationProperties.Name="{Binding BlueColorText}" Click="BlueColorFilterButton_Click" DragStarting="ColorFilterButton_DragStarting" PointerCaptureLost="ColorFilterButton_PointerCaptureLost" PointerMoved="ColorFilterButton_PointerMoved" PointerPressed="ColorFilterButton_PointerPressed" PointerReleased="ColorFilterButton_PointerReleased" Style="{StaticResource TodoColorFilterButtonStyle}" Tag="blue" ToolTipService.ToolTip="{Binding BlueColorText}"><Border Width="14" Height="6" Background="#4D8FE3" CornerRadius="3" /></Button>
+                <Button x:Name="PurpleColorFilterButton" AutomationProperties.Name="{Binding PurpleColorText}" Click="PurpleColorFilterButton_Click" DragStarting="ColorFilterButton_DragStarting" PointerCaptureLost="ColorFilterButton_PointerCaptureLost" PointerMoved="ColorFilterButton_PointerMoved" PointerPressed="ColorFilterButton_PointerPressed" PointerReleased="ColorFilterButton_PointerReleased" Style="{StaticResource TodoColorFilterButtonStyle}" Tag="purple" ToolTipService.ToolTip="{Binding PurpleColorText}"><Border Width="14" Height="6" Background="#9B6BE8" CornerRadius="3" /></Button>
+                <Button x:Name="TealColorFilterButton" AutomationProperties.Name="{Binding TealColorText}" Click="TealColorFilterButton_Click" DragStarting="ColorFilterButton_DragStarting" PointerCaptureLost="ColorFilterButton_PointerCaptureLost" PointerMoved="ColorFilterButton_PointerMoved" PointerPressed="ColorFilterButton_PointerPressed" PointerReleased="ColorFilterButton_PointerReleased" Style="{StaticResource TodoColorFilterButtonStyle}" Tag="teal" ToolTipService.ToolTip="{Binding TealColorText}"><Border Width="14" Height="6" Background="#2DB7A3" CornerRadius="3" /></Button>
+                <Button x:Name="PinkColorFilterButton" AutomationProperties.Name="{Binding PinkColorText}" Click="PinkColorFilterButton_Click" DragStarting="ColorFilterButton_DragStarting" PointerCaptureLost="ColorFilterButton_PointerCaptureLost" PointerMoved="ColorFilterButton_PointerMoved" PointerPressed="ColorFilterButton_PointerPressed" PointerReleased="ColorFilterButton_PointerReleased" Style="{StaticResource TodoColorFilterButtonStyle}" Tag="pink" ToolTipService.ToolTip="{Binding PinkColorText}"><Border Width="14" Height="6" Background="#E66AA2" CornerRadius="3" /></Button>
             </StackPanel>
         </StackPanel>
 
@@ -365,6 +371,7 @@
                                     Opacity="{Binding ContentOpacity}"
                                     Spacing="2">
                                     <TextBlock
+                                        helpers:WidgetTextShadow.Cast="True"
                                         FontSize="{Binding ElementName=TodoListView, Path=DataContext.TextSize}"
                                         LineHeight="{Binding ElementName=TodoListView, Path=DataContext.ItemTextLineHeight}"
                                         LineStackingStrategy="BlockLineHeight"
@@ -376,6 +383,7 @@
 
                                     <StackPanel Orientation="Horizontal" Spacing="6">
                                         <TextBlock
+                                            helpers:WidgetTextShadow.Cast="True"
                                             FontSize="{Binding ElementName=TodoListView, Path=DataContext.SecondaryTextSize}"
                                             Foreground="{ThemeResource TextFillColorTertiaryBrush}"
                                             MaxLines="1"
@@ -383,6 +391,7 @@
                                             TextTrimming="CharacterEllipsis"
                                             Visibility="{Binding DueStatusNormalVisibility}" />
                                         <TextBlock
+                                            helpers:WidgetTextShadow.Cast="True"
                                             FontSize="{Binding ElementName=TodoListView, Path=DataContext.SecondaryTextSize}"
                                             Foreground="{ThemeResource SystemFillColorCautionBrush}"
                                             MaxLines="1"
@@ -391,7 +400,7 @@
                                             Visibility="{Binding DueStatusOverdueVisibility}" />
                                         <StackPanel Orientation="Horizontal" Spacing="2" Visibility="{Binding AttachmentSummaryVisibility}">
                                             <FontIcon FontSize="{Binding ElementName=TodoListView, Path=DataContext.SmallIconSize}" Foreground="{ThemeResource TextFillColorTertiaryBrush}" Glyph="&#xE723;" />
-                                            <TextBlock FontSize="{Binding ElementName=TodoListView, Path=DataContext.SecondaryTextSize}" Foreground="{ThemeResource TextFillColorTertiaryBrush}" Text="{Binding AttachmentSummaryText}" />
+                                            <TextBlock helpers:WidgetTextShadow.Cast="True" FontSize="{Binding ElementName=TodoListView, Path=DataContext.SecondaryTextSize}" Foreground="{ThemeResource TextFillColorTertiaryBrush}" Text="{Binding AttachmentSummaryText}" />
                                         </StackPanel>
                                     </StackPanel>
 
@@ -404,7 +413,7 @@
                                         Visibility="{Binding RecurringHistoryToggleVisibility}">
                                         <StackPanel Orientation="Horizontal" Spacing="4">
                                             <FontIcon FontSize="{Binding ElementName=TodoListView, Path=DataContext.SmallIconSize}" Glyph="{Binding RecurringHistoryToggleGlyph}" />
-                                            <TextBlock FontSize="{Binding ElementName=TodoListView, Path=DataContext.SecondaryTextSize}" Text="{Binding RecurringHistoryToggleText}" />
+                                            <TextBlock helpers:WidgetTextShadow.Cast="True" FontSize="{Binding ElementName=TodoListView, Path=DataContext.SecondaryTextSize}" Text="{Binding RecurringHistoryToggleText}" />
                                         </StackPanel>
                                     </Button>
                                 </StackPanel>
@@ -466,15 +475,16 @@
                     FontSize="24"
                     Foreground="{ThemeResource TextFillColorTertiaryBrush}"
                     Glyph="&#xE73E;"
-                    Opacity="0.72"
                     Style="{StaticResource WidgetEmptyStateIconStyle}" />
                 <TextBlock
+                    helpers:WidgetTextShadow.Cast="True"
                     FontSize="{Binding TitleTextSize}"
                     FontWeight="SemiBold"
                     Foreground="{ThemeResource TextFillColorSecondaryBrush}"
                     Style="{StaticResource WidgetEmptyStateTitleTextStyle}"
                     Text="{Binding EmptyStateTitle}" />
                 <TextBlock
+                    helpers:WidgetTextShadow.Cast="True"
                     FontSize="{Binding SecondaryTextSize}"
                     Foreground="{ThemeResource TextFillColorTertiaryBrush}"
                     Style="{StaticResource WidgetEmptyStateDescriptionTextStyle}"
@@ -795,7 +805,7 @@
                                             VerticalAlignment="Center"
                                             Click="DetailStepCheckBox_Click"
                                             IsChecked="{Binding IsCompleted, Mode=OneWay}" />
-                                        <TextBox
+                                        <TextBox svc:Localized.AutomationNameKey="Todo.Detail.EditStep"
                                             x:Name="DetailStepTextBox"
                                             Grid.Column="1"
                                             MinHeight="32"
@@ -808,7 +818,7 @@
                                             LostFocus="DetailStepTextBox_LostFocus"
                                             Opacity="{Binding ContentOpacity}"
                                             Text="{Binding Text, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}" />
-                                        <Button
+                                        <Button AutomationProperties.Name="{Binding ElementName=RootGrid, Path=DataContext.DeleteText}"
                                             x:Name="DetailDeleteStepButton"
                                             Grid.Column="2"
                                             Width="28"
@@ -841,7 +851,7 @@
                                 FontSize="{Binding ElementName=RootGrid, Path=DataContext.ContentTextSize}"
                                 KeyDown="DetailNewStepTextBox_KeyDown"
                                 PlaceholderText="{Binding ElementName=RootGrid, Path=DataContext.DetailAddStepText}" />
-                            <Button
+                            <Button AutomationProperties.Name="{Binding ElementName=RootGrid, Path=DataContext.DetailAddStepText}"
                                 Grid.Column="1"
                                 Width="32"
                                 Height="32"
@@ -1025,15 +1035,16 @@
                 <Grid ColumnSpacing="8">
                     <Grid.ColumnDefinitions><ColumnDefinition Width="*" /><ColumnDefinition Width="Auto" /></Grid.ColumnDefinitions>
                     <TextBlock x:Name="CustomDueDateTitleText" FontSize="{Binding TextSize}" Style="{StaticResource WidgetInlineEditorTitleTextStyle}" />
-                    <Button x:Name="CustomDueDateCloseButton" Grid.Column="1" Click="CustomDueDateCancelButton_Click" Style="{StaticResource WidgetInlineEditorCloseButtonStyle}"><FontIcon FontSize="10" Glyph="&#xE711;" /></Button>
+                    <Button svc:Localized.AutomationNameKey="Common.Close" x:Name="CustomDueDateCloseButton" Grid.Column="1" Click="CustomDueDateCancelButton_Click" Style="{StaticResource WidgetInlineEditorCloseButtonStyle}"><FontIcon FontSize="10" Glyph="&#xE711;" /></Button>
                 </Grid>
-                <CalendarDatePicker x:Name="CustomDueDatePicker" Grid.Row="1" Height="36" MinHeight="36" MinWidth="0" HorizontalAlignment="Stretch" />
-                <Button x:Name="CustomDueTimeButton" Grid.Row="2" Click="CustomDueTimeButton_Click" FontSize="{Binding FilterTextSize}" HorizontalAlignment="Stretch" Style="{StaticResource DefaultButtonStyle}">
+                <CalendarDatePicker svc:Localized.AutomationNameKey="Todo.Due.Custom" x:Name="CustomDueDatePicker" Grid.Row="1" Height="36" MinHeight="36" MinWidth="0" HorizontalAlignment="Stretch" />
+                <Button svc:Localized.AutomationNameKey="Todo.Due.Custom.Time" x:Name="CustomDueTimeButton" Grid.Row="2" Click="CustomDueTimeButton_Click" FontSize="{Binding FilterTextSize}" HorizontalAlignment="Stretch" Style="{StaticResource DefaultButtonStyle}">
                     <Grid ColumnSpacing="8"><Grid.ColumnDefinitions><ColumnDefinition Width="*" /><ColumnDefinition Width="Auto" /></Grid.ColumnDefinitions><TextBlock x:Name="CustomDueTimeText" VerticalAlignment="Center" /><FontIcon Grid.Column="1" FontSize="12" Glyph="&#xE916;" /></Grid>
                 </Button>
                 <StackPanel Grid.Row="3" HorizontalAlignment="Right" Orientation="Horizontal" Spacing="8">
-                    <Button x:Name="CustomDueDateCancelButton" Click="CustomDueDateCancelButton_Click" FontSize="{Binding FilterTextSize}" Style="{StaticResource WidgetEditorCommandButtonStyle}" />
-                    <Button x:Name="CustomDueDateSaveButton" Click="CustomDueDateSaveButton_Click" FontSize="{Binding FilterTextSize}" Style="{StaticResource WidgetEditorCommandButtonStyle}" />
+                    <!-- Affirmative (Save) on the left, matching the app-wide ContentDialog convention. -->
+                    <Button svc:Localized.AutomationNameKey="Common.Save" x:Name="CustomDueDateSaveButton" Click="CustomDueDateSaveButton_Click" FontSize="{Binding FilterTextSize}" Style="{StaticResource WidgetEditorCommandButtonStyle}" />
+                    <Button svc:Localized.AutomationNameKey="Common.Cancel" x:Name="CustomDueDateCancelButton" Click="CustomDueDateCancelButton_Click" FontSize="{Binding FilterTextSize}" Style="{StaticResource WidgetEditorCommandButtonStyle}" />
                 </StackPanel>
             </Grid>
         </Border>

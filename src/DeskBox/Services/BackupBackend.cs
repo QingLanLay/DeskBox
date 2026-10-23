@@ -10,10 +10,21 @@ internal sealed class BackupBackend(
     public bool LocalScheduleEnabled => local.AutomaticBackupOptions.IsEnabled;
     public bool CloudScheduleEnabled => cloud.Options.IsConfigured;
 
-    public void RefreshOptions()
+    public bool RefreshOptions()
     {
+        // Record value equality covers every effective field. LastSuccessUtc
+        // is excluded on the cloud side: the service updates it in memory on
+        // every successful upload, and a failed settings persist would then
+        // make every refresh look "changed" forever.
+        AutomaticBackupOptions previousLocal = local.AutomaticBackupOptions;
+        CloudBackupOptions previousCloud = cloud.Options;
         local.UpdateAutomaticBackupOptions(DataBackupSettingsPolicy.GetOptions(settings.Settings));
         cloud.UpdateOptions(CloudBackupSettingsPolicy.GetOptions(settings.Settings));
+        bool localChanged = previousLocal != local.AutomaticBackupOptions;
+        bool cloudChanged =
+            previousCloud with { LastSuccessUtc = DateTimeOffset.MinValue } !=
+            cloud.Options with { LastSuccessUtc = DateTimeOffset.MinValue };
+        return localChanged || cloudChanged;
     }
 
     public async Task PrepareManualBackupAsync(CancellationToken cancellationToken)

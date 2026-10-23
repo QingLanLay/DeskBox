@@ -83,6 +83,105 @@ public partial class WidgetViewModel
     }
 
     /// <summary>
+    /// Block-aware multi-selection variant of <see cref="MoveItemForReorder"/>.
+    /// The dragged items keep their relative order and land as one contiguous
+    /// block. The block is applied through sequential collection moves rather
+    /// than a remove/insert rebuild, which preserves the ListView selection
+    /// across the reorder.
+    /// </summary>
+    public bool MoveItemsForReorder(
+        IReadOnlyList<WidgetItem> draggedItems,
+        int targetIndex)
+    {
+        if (Config.SortMode != WidgetSortMode.Manual ||
+            draggedItems.Count == 0)
+        {
+            return false;
+        }
+
+        if (draggedItems.Count == 1)
+        {
+            return MoveItemForReorder(
+                draggedItems[0],
+                targetIndex);
+        }
+
+        if (!TryComputeItemBlockReorder(
+                Items,
+                draggedItems,
+                targetIndex,
+                out int insertionIndex))
+        {
+            return false;
+        }
+
+        HashSet<WidgetItem> draggedSet = new(
+            draggedItems,
+            ReferenceEqualityComparer.Instance);
+        foreach (WidgetItem item in Items
+                     .Where(draggedSet.Contains)
+                     .ToList())
+        {
+            int currentIndex = IndexOfReference(Items, item, 0);
+            if (currentIndex >= 0 && currentIndex != insertionIndex)
+            {
+                Items.Move(currentIndex, insertionIndex);
+            }
+
+            insertionIndex++;
+        }
+
+        return true;
+    }
+
+    // Computes where a contiguous block move lands: the insertion index
+    // counts how many dragged items already sit ahead of the drop target, so
+    // removing them from their old positions cannot shift the landing spot.
+    // Returns false for an equivalent drop that would not change the order.
+    internal static bool TryComputeItemBlockReorder(
+        IReadOnlyList<WidgetItem> items,
+        IReadOnlyList<WidgetItem> draggedItems,
+        int targetIndex,
+        out int insertionIndex)
+    {
+        insertionIndex = -1;
+        HashSet<WidgetItem> draggedSet = new(
+            draggedItems,
+            ReferenceEqualityComparer.Instance);
+        List<int> draggedIndices = new(draggedSet.Count);
+        for (int index = 0; index < items.Count; index++)
+        {
+            if (draggedSet.Contains(items[index]))
+            {
+                draggedIndices.Add(index);
+            }
+        }
+
+        if (draggedIndices.Count == 0)
+        {
+            return false;
+        }
+
+        int cappedIndex = Math.Clamp(targetIndex, 0, items.Count);
+        int movingBeforeInsertion = draggedIndices
+            .Count(index => index < cappedIndex);
+        insertionIndex = Math.Clamp(
+            cappedIndex - movingBeforeInsertion,
+            0,
+            items.Count - draggedIndices.Count);
+
+        for (int offset = 0; offset < draggedIndices.Count; offset++)
+        {
+            if (draggedIndices[offset] != insertionIndex + offset)
+            {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    /// <summary>
     /// Persists the current item order to config and settings.
     /// Called once after real-time reordering is complete (on drop).
     /// </summary>
@@ -278,10 +377,11 @@ public partial class WidgetViewModel
             {
                 // A full reload mid-import would re-sync, re-sort and
                 // re-hydrate the whole list, throwing away the batching the
-                // open scope just bought — and a large import reliably trips
-                // the reload threshold (desktop widgets reload on every
-                // batch). Defer one authoritative refresh to the batch
-                // finalization instead of fighting the import for the list.
+                // open scope just bought — and an import's event storm can
+                // still trip the watcher's buffered-change cap or its
+                // overflow/error channels. Defer one authoritative refresh to
+                // the batch finalization instead of fighting the import for
+                // the list.
                 if (_itemMutationBatchDepth > 0)
                 {
                     _pendingFolderRefreshAfterBatch = true;
@@ -293,19 +393,22 @@ public partial class WidgetViewModel
                 return;
             }
 
-            FolderPathSnapshot snapshot =
-                await FileService.CaptureDirectChildSnapshotAsync(changeBatch.WatchedPath);
-            if (!FolderSnapshotStatusPolicy.IsSuccessful(snapshot.Status))
+            // A large batch with a KNOWN change set no longer detours through
+            // a full reload: coalesce the shell/antivirus event multiplication
+            // to one change per path, then apply the batch inside a single
+            // mutation scope so the whole batch pays one sort-order
+            // normalization, one manual-order persistence, one hydration start
+            // (which itself only processes items still missing metadata) and
+            // one render reconcile - cost proportional to the batch, not the
+            // folder. Only the state-loss signals in ShouldUseFullReload still
+            // reload; the watcher's buffered-change cap routes true event
+            // storms there.
+            using (EnterItemMutationScope())
             {
-                App.Log(
-                    $"[FolderRefresh] Incremental root unavailable; retaining snapshot: " +
-                    $"'{changeBatch.WatchedPath}'");
-                return;
-            }
-
-            foreach (var change in changeBatch.Changes)
-            {
-                await ApplyFolderChangeAsync(change, snapshot);
+                foreach (FolderChange change in CoalesceFolderChanges(changeBatch.Changes))
+                {
+                    await ApplyFolderChangeAsync(change);
+                }
             }
         }
         catch (Exception ex)
@@ -385,9 +488,21 @@ public partial class WidgetViewModel
         StartItemHydration();
     }
 
-    private bool ShouldUseFullReload(FolderChangeBatch changeBatch, string mappedFolderPath)
+    /// <summary>
+    /// Decides whether a watcher batch must pay a full reload. Only
+    /// state-loss signals qualify: the watcher's overflow/error/query
+    /// channels (ReadDirectoryChangesW provides just a blanket notification
+    /// once its buffer overflows, so <c>RequiresFullReload</c> batches cannot
+    /// trust their change list), an empty change list, the combined desktop
+    /// roots (the incremental path applies single-root changes), and batches
+    /// from a folder this widget no longer displays. Batch SIZE is
+    /// deliberately not a criterion: a large batch with a known change set
+    /// runs as a coalesced incremental pass inside one mutation scope, so a
+    /// multi-folder drag storm no longer triggers reload-per-batch.
+    /// </summary>
+    internal static bool ShouldUseFullReload(FolderChangeBatch changeBatch, string mappedFolderPath)
     {
-        if (changeBatch.RequiresFullReload || changeBatch.Changes.Count == 0 || changeBatch.Changes.Count > IncrementalRefreshBatchThreshold)
+        if (changeBatch.RequiresFullReload || changeBatch.Changes.Count == 0)
         {
             return true;
         }
@@ -435,9 +550,56 @@ public partial class WidgetViewModel
         return changeBatch.Generation == watcher.Generation;
     }
 
-    private async Task ApplyFolderChangeAsync(
-        FolderChange change,
-        FolderPathSnapshot snapshot)
+    /// <summary>
+    /// Collapses a watcher batch to its last event per path, keeping the
+    /// surviving events in their original batch order. Shell copies and
+    /// antivirus scans report several events per path (Created plus
+    /// LastWrite/Size/Attributes Changed); classification re-reads current
+    /// disk state, so only the newest signal per path carries information
+    /// and every older duplicate would just repeat a classification and an
+    /// upsert. Renamed events are exempt: a rename carries its own old-path
+    /// removal, and a later event against the renamed path (the copy engine
+    /// writing the moved file) must not swallow that removal.
+    /// </summary>
+    internal static IReadOnlyList<FolderChange> CoalesceFolderChanges(
+        IReadOnlyList<FolderChange> changes)
+    {
+        if (changes.Count <= 1)
+        {
+            return changes;
+        }
+
+        var lastEventIndexByPath = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
+        for (int index = 0; index < changes.Count; index++)
+        {
+            FolderChange change = changes[index];
+            if (change.ChangeType != WatcherChangeTypes.Renamed)
+            {
+                lastEventIndexByPath[change.FullPath] = index;
+            }
+        }
+
+        if (lastEventIndexByPath.Count == changes.Count)
+        {
+            // No renames and every path distinct - nothing to collapse.
+            return changes;
+        }
+
+        var coalesced = new List<FolderChange>(changes.Count);
+        for (int index = 0; index < changes.Count; index++)
+        {
+            FolderChange change = changes[index];
+            if (change.ChangeType == WatcherChangeTypes.Renamed ||
+                lastEventIndexByPath[change.FullPath] == index)
+            {
+                coalesced.Add(change);
+            }
+        }
+
+        return coalesced;
+    }
+
+    private async Task ApplyFolderChangeAsync(FolderChange change)
     {
         if (change.ChangeType == WatcherChangeTypes.Renamed && !string.IsNullOrWhiteSpace(change.OldFullPath))
         {
@@ -445,9 +607,9 @@ public partial class WidgetViewModel
                 ? FindItemIndexByPath(change.OldFullPath)
                 : -1;
             FolderEntryRefreshStatus oldState =
-                FileService.ClassifyDirectChild(snapshot, change.OldFullPath);
+                await FileService.ClassifyDirectChildAsync(change.OldFullPath);
             FolderEntryRefreshStatus newState =
-                FileService.ClassifyDirectChild(snapshot, change.FullPath);
+                await FileService.ClassifyDirectChildAsync(change.FullPath);
             if (ShouldRemoveExistingItem(WatcherChangeTypes.Renamed, oldState))
             {
                 if (newState == FolderEntryRefreshStatus.Available)
@@ -476,7 +638,7 @@ public partial class WidgetViewModel
         }
 
         FolderEntryRefreshStatus state =
-            FileService.ClassifyDirectChild(snapshot, change.FullPath);
+            await FileService.ClassifyDirectChildAsync(change.FullPath);
         if (ShouldRemoveExistingItem(change.ChangeType, state))
         {
             RemoveItemByPath(change.FullPath);
@@ -705,6 +867,73 @@ public partial class WidgetViewModel
         }
     }
 
+    /// <summary>
+    /// Pure shortcut-target freshness decision shared with behavior tests:
+    /// refresh snapshots never read shortcut targets, so a stored target
+    /// only goes stale when the .lnk itself changed (icon-ledger mismatch).
+    /// An unstamped ledger (-1, extraction never succeeded) means "no
+    /// information" and preserves the stored target.
+    /// </summary>
+    internal static bool ShouldDropStaleHydratedShortcutTarget(
+        bool targetIsShortcut,
+        long targetHydratedIconFileSize,
+        DateTime targetHydratedIconStamp,
+        bool sourceIsShortcut,
+        long sourceFileSize,
+        DateTime sourceLastModified)
+    {
+        return targetIsShortcut &&
+               sourceIsShortcut &&
+               targetHydratedIconFileSize >= 0 &&
+               (targetHydratedIconFileSize != sourceFileSize ||
+                targetHydratedIconStamp != sourceLastModified);
+    }
+
+    /// <summary>
+    /// Pure icon-ledger decision shared with behavior tests: an icon
+    /// reference is stale when the file's size or timestamp moved since
+    /// extraction. This is the invalidation point that replaces
+    /// lifecycle-triggered blanket icon clears: the merge drops exactly the
+    /// changed items, the content-versioned cache key self-heals on the
+    /// re-fetch, and unchanged items keep their icons untouched.
+    /// </summary>
+    internal static bool ShouldDropStaleHydratedIcon(
+        bool hasIcon,
+        long hydratedFileSize,
+        DateTime hydratedStamp,
+        long sourceFileSize,
+        DateTime sourceStamp)
+    {
+        return hasIcon &&
+               (hydratedFileSize != sourceFileSize ||
+                hydratedStamp != sourceStamp);
+    }
+
+    /// <summary>
+    /// Pure folder-count freshness decision shared with behavior tests.
+    /// Refresh snapshots enumerate with folder counts unloaded, so the merge
+    /// must not unconditionally copy the unloaded flag: a folder's
+    /// visible-child count survives a refresh only when the folder's own
+    /// LastWriteTime did not change and it was already loaded. Unconditional
+    /// copying made every activation reconciliation re-enumerate every
+    /// subfolder — a serial full directory scan each (the "mapped folder
+    /// loads slowly" metadata churn).
+    /// </summary>
+    internal static bool DeriveFolderItemCountLoaded(
+        bool targetIsFolder,
+        bool targetIsLoaded,
+        DateTime targetLastModified,
+        bool sourceIsFolder,
+        bool sourceIsLoaded,
+        DateTime sourceLastModified)
+    {
+        return (targetIsFolder &&
+                sourceIsFolder &&
+                targetIsLoaded &&
+                targetLastModified == sourceLastModified) ||
+               sourceIsLoaded;
+    }
+
     private static void ApplyRuntimeItemData(
         WidgetItem target,
         WidgetItem source,
@@ -712,17 +941,58 @@ public partial class WidgetViewModel
     {
         target.Name = source.Name;
         target.Path = source.Path;
-        target.TargetPath = source.TargetPath;
+        if (!string.IsNullOrWhiteSpace(source.TargetPath) ||
+            string.IsNullOrWhiteSpace(target.TargetPath))
+        {
+            target.TargetPath = source.TargetPath;
+        }
+        else if (ShouldDropStaleHydratedShortcutTarget(
+                     target.IsShortcut,
+                     target.HydratedIconFileSize,
+                     target.HydratedIconStamp,
+                     source.IsShortcut,
+                     source.FileSize,
+                     source.LastModified))
+        {
+            // The .lnk itself changed since its target was read: drop the
+            // stored target and the loaded flag so hydration re-reads it.
+            // Snapshots never read targets, so without this guard every
+            // refresh merge wiped the hydrated value.
+            target.TargetPath = source.TargetPath;
+            target.IsShortcutTargetLoaded = false;
+        }
         if (!preserveExistingIconWhenMissing || source.Icon is not null)
         {
             target.Icon = source.Icon;
+        }
+        else if (ShouldDropStaleHydratedIcon(
+                     target.Icon is not null,
+                     target.HydratedIconFileSize,
+                     target.HydratedIconStamp,
+                     source.FileSize,
+                     source.LastModified))
+        {
+            // Ledger mismatch: the file's size or timestamp moved since its
+            // icon was extracted (sleep-time replacements, external edits).
+            // Drop the reference so the hydration universe re-fetches under
+            // the new, content-versioned cache key; matches keep the icon
+            // without touching the cache at all.
+            target.Icon = null;
         }
         target.FileSize = source.FileSize;
         if (source.IsFolderItemCountLoaded)
         {
             target.FolderItemCount = source.FolderItemCount;
         }
-        target.IsFolderItemCountLoaded = source.IsFolderItemCountLoaded;
+        // Computed before LastModified is overwritten below: the comparison
+        // needs the target's previous timestamp.
+        target.IsFolderItemCountLoaded = DeriveFolderItemCountLoaded(
+            target.IsFolder,
+            target.IsFolderItemCountLoaded,
+            target.LastModified,
+            source.IsFolder,
+            source.IsFolderItemCountLoaded,
+            source.LastModified);
         target.CreatedAt = source.CreatedAt;
         target.LastModified = source.LastModified;
         if (source.IsShellKindLoaded)

@@ -238,7 +238,16 @@ public sealed class FileSurfaceParityContractTests
             fileService,
             StringComparison.Ordinal);
         Assert.Contains("IFileOperationNative", shellTransfer, StringComparison.Ordinal);
-        Assert.Contains("thread.SetApartmentState(ApartmentState.STA)", shellTransfer, StringComparison.Ordinal);
+        // The dedicated STA dispatch moved into the bounded runner (feedback
+        // 455): the transfer still owns an STA worker thread, now with a
+        // watchdog that abandons a wedged one instead of hanging the import.
+        Assert.Contains("s_shellTransferRunner", shellTransfer, StringComparison.Ordinal);
+        Assert.Contains(
+            "thread.SetApartmentState(ApartmentState.STA)",
+            File.ReadAllText(Path.Combine(
+                root,
+                "src/DeskBox/Helpers/BoundedStaOperationRunner.cs")),
+            StringComparison.Ordinal);
         Assert.Contains("fileOperation.SetOwnerWindow(ownerWindowHandle)", shellTransfer, StringComparison.Ordinal);
         Assert.Contains("useShellProgress: true", surface, StringComparison.Ordinal);
         Assert.Contains("useShellProgress: true", itemVisuals, StringComparison.Ordinal);
@@ -277,40 +286,52 @@ public sealed class FileSurfaceParityContractTests
     }
 
     [Fact]
-    public void NativeAotInteractiveRouting_ShellOwnsCrossVolumeMovesAndCopies()
+    public void InteractiveRouting_ShellOwnsEveryMoveAndCopy()
     {
         string source = File.ReadAllText(Path.Combine(
             FindRepositoryRoot(),
             "src/DeskBox/Services/FileService.cs"));
-        int aotBranch = source.IndexOf(
-            "// The Native AOT profile keeps the legacy SHFileOperation bridge",
+
+        // The legacy SHFileOperation bridge was retired (2026-10-13): it
+        // ran same-volume moves on an unpumped MTA thread-pool thread with
+        // no watchdog, which could hang a paste forever. Every build channel
+        // and volume relationship now reaches the modern STA engine.
+        Assert.DoesNotContain(
+            "ExecuteShellMovePlanAsync",
+            source,
             StringComparison.Ordinal);
-        Assert.True(aotBranch >= 0, "The Native AOT interactive branch was removed.");
-        int branchEnd = source.IndexOf("#endif", aotBranch, StringComparison.Ordinal);
-        Assert.True(branchEnd > aotBranch);
-        string branch = source[aotBranch..branchEnd];
-        int volumeGuard = branch.IndexOf(
-            "CanUseLegacyShellMove(",
+        Assert.DoesNotContain(
+            "CanUseLegacyShellMove",
+            source,
             StringComparison.Ordinal);
-        int shellMove = branch.IndexOf(
-            "ExecuteShellMovePlanAsync(",
-            StringComparison.Ordinal);
-        int modernEngine = branch.IndexOf(
-            "ExecuteModernShellTransferPlanAsync(",
+        Assert.DoesNotContain(
+            "MoveEntriesWithShellProgress",
+            source,
             StringComparison.Ordinal);
 
-        Assert.True(
-            volumeGuard >= 0 && shellMove > volumeGuard && modernEngine > shellMove,
-            "Same-volume moves must keep the legacy bridge; everything else " +
-            "must reach the modern Shell engine after it.");
-        // Cross-volume moves and copies must not fall back to the managed
-        // engine inside the interactive AOT branch: its CreateFileW(DELETE)
-        // source probe fails raw with access denied on readable-but-not-
-        // deletable sources such as Public Desktop shortcuts (feedback #138).
-        Assert.DoesNotContain(
-            "ExecuteManagedTransferPlanWithProgressAsync",
-            branch,
+        int interactiveGate = source.IndexOf(
+            "useShellProgress && onItemError is null",
             StringComparison.Ordinal);
+        Assert.True(interactiveGate >= 0, "The interactive gate was removed.");
+        int modernEngine = source.IndexOf(
+            "ExecuteModernShellTransferPlanAsync(",
+            interactiveGate,
+            StringComparison.Ordinal);
+        Assert.True(
+            modernEngine > interactiveGate,
+            "Interactive imports must reach the modern Shell engine.");
+        // Interactive transfers must not fall back to the managed engine:
+        // its CreateFileW(DELETE) source probe fails raw with access denied
+        // on readable-but-not-deletable sources such as Public Desktop
+        // shortcuts (feedback #138).
+        int managedTransfer = source.IndexOf(
+            "() => ExecuteManagedTransferPlanWithProgressAsync(",
+            interactiveGate,
+            StringComparison.Ordinal);
+        Assert.True(
+            managedTransfer < 0 || managedTransfer > modernEngine,
+            "The managed engine must never preempt the Shell engine for " +
+            "interactive transfers.");
     }
 
     [Fact]
@@ -494,6 +515,31 @@ public sealed class FileSurfaceParityContractTests
             StringComparison.Ordinal);
     }
 
+    [Fact]
+    public void PasteEntry_GetsTheSameTransferGuardsAsTheDropChannels()
+    {
+        string source = File.ReadAllText(Path.Combine(
+            FindRepositoryRoot(),
+            "src/DeskBox/Controls/WidgetContents/FileSurfaceContent.xaml.cs"));
+        string paste = ReadPrivateMethod(
+            source,
+            "private async Task PasteDataPackageAsync");
+
+        // Paste used to skip the drop channels' three guards entirely: a
+        // source mid-transfer, an all-sources-already-in-destination no-op
+        // (cut then paste back in place), and unsafe directory moves all
+        // fell through to the plan layer with no dedicated feedback.
+        Assert.Contains("HasTransferConflict(", paste, StringComparison.Ordinal);
+        Assert.Contains(
+            "AreAllSourcesAlreadyInDestinationResolvedAsync(",
+            paste,
+            StringComparison.Ordinal);
+        Assert.Contains(
+            "IsUnsafeDirectoryTransfer(",
+            paste,
+            StringComparison.Ordinal);
+    }
+
     private static void AssertMethodOrdersPreparationBeforePayloadRead(
         string source,
         string methodName)
@@ -669,7 +715,7 @@ public sealed class FileSurfaceParityContractTests
         Assert.DoesNotContain("item.IsSelected =", itemVisuals, StringComparison.Ordinal);
         Assert.DoesNotContain("item.IsSelected =", menus, StringComparison.Ordinal);
         Assert.Contains(
-            "GetActiveItemsView().SelectedItems.Contains(item)",
+            "activeView.SelectedItems.Contains(item)",
             itemVisuals,
             StringComparison.Ordinal);
         Assert.Contains(
@@ -1631,16 +1677,19 @@ public sealed class FileSurfaceParityContractTests
             FindRepositoryRoot(),
             "src/DeskBox/Controls/WidgetContents/FileSurfaceContent.SelectionAndMenus.cs"));
 
+        // Windows 11 background layout: View / Sort by / Refresh /
+        // Paste / New / widget-specific tail. Updated with the context
+        // menu v3 batch (Win11 alignment).
         string[] markers =
         [
+            "var view = new MenuFlyoutSubItem",
+            "var sortBy = new MenuFlyoutSubItem",
             "CreateMenuItem(\"Common.Refresh\"",
             "CreateMenuItem(\"Common.Paste\"",
-            "CreateMenuItem(\"Common.NewFolder\"",
-            "\"Widget.OpenStorageFolder\"",
+            "flyout.Items.Add(CreateNewSubMenu(hasMappedFolder))",
             "flyout.Items.Add(hostItems.TitleStyleItem)",
-            "var viewAndSort = new MenuFlyoutSubItem",
             "flyout.Items.Add(CreateStackSettingsMenu())",
-            "flyout.Items.Add(new MenuFlyoutSeparator())",
+            "\"Widget.OpenStorageFolder\"",
             "flyout.Items.Add(hostItems.CloseWidgetItem)"
         ];
 
@@ -1679,6 +1728,74 @@ public sealed class FileSurfaceParityContractTests
         Assert.Contains(
             "_surfaceReorderDraggedItem",
             source,
+            StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void SurfaceReorder_CommitsMultiSelectionAsOneBlock()
+    {
+        string root = FindRepositoryRoot();
+        string source = File.ReadAllText(Path.Combine(
+            root,
+            "src/DeskBox/Controls/WidgetContents/FileSurfaceContent.xaml.cs"));
+        string stackPopover = File.ReadAllText(Path.Combine(
+            root,
+            "src/DeskBox/Controls/WidgetContents/FileSurfaceContent.StackPopover.cs"));
+        string stacks = File.ReadAllText(Path.Combine(
+            root,
+            "src/DeskBox/ViewModels/WidgetViewModel.Stacks.cs"));
+        string sorting = File.ReadAllText(Path.Combine(
+            root,
+            "src/DeskBox/ViewModels/WidgetViewModel.SortingAndWatchers.cs"));
+
+        // The commit path must resolve the whole dragged selection, not a
+        // FirstOrDefault anchor collapse.
+        Assert.Contains(
+            "_surfaceReorderDraggedItems",
+            source,
+            StringComparison.Ordinal);
+        Assert.Contains(
+            "ResolveSurfaceReorderItems()",
+            source,
+            StringComparison.Ordinal);
+        Assert.Contains(
+            "ViewModel.MoveVisibleItemsForReorder(",
+            source,
+            StringComparison.Ordinal);
+        Assert.Contains(
+            "ViewModel.MoveItemsForReorder(",
+            source,
+            StringComparison.Ordinal);
+        Assert.DoesNotContain(
+            "ViewModel.Items.FirstOrDefault(item =>\n" +
+            "                _surfaceReorderPathSet.Contains",
+            source.Replace("\r\n", "\n", StringComparison.Ordinal),
+            StringComparison.Ordinal);
+
+        // Block primitives live in the view model with a single persist per
+        // phase so a multi-selection cannot trigger a per-item rebuild storm.
+        Assert.Contains(
+            "TryMoveDisplayUnitOverrides(",
+            stacks,
+            StringComparison.Ordinal);
+        Assert.Contains(
+            "DetachStackMembersForBlockReorder(",
+            stacks,
+            StringComparison.Ordinal);
+        Assert.Contains(
+            "TryComputeItemBlockReorder(",
+            sorting,
+            StringComparison.Ordinal);
+
+        // A projection rebuild drops the dragged selection; both surfaces
+        // must schedule a restore instead of leaving the block unselected.
+        Assert.Contains(
+            "ScheduleSurfaceReorderSelectionRestore(",
+            source,
+            StringComparison.Ordinal);
+        Assert.Contains(
+            "ScheduleStackPopoverReorderSelectionRestore(",
+            stackPopover,
             StringComparison.Ordinal);
     }
 

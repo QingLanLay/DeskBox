@@ -1,4 +1,4 @@
-using System.Text.RegularExpressions;
+﻿using System.Text.RegularExpressions;
 using System.Xml.Linq;
 
 namespace DeskBox.Tests;
@@ -60,7 +60,7 @@ public sealed class AotRetailIsolationContractTests
                      "src/DeskBox/App.xaml.cs",
                      "src/DeskBox/Helpers/NativeDropTarget.cs",
                      "src/DeskBox/Helpers/ShellContextMenuHelper.cs",
-                     "src/DeskBox/Services/FileService.cs",
+                     "src/DeskBox/Services/FileService.ShellTransfer.cs",
                      "src/DeskBox/Services/LocalizationService.cs",
                      "src/DeskBox/Services/OrganizerService.cs",
                      "src/DeskBox/Services/WeatherWidgetContentProvider.cs"

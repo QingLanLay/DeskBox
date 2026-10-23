@@ -134,13 +134,14 @@ public sealed class AotStage5B4AContractTests
         foreach (string locale in new[]
                  {
                      "zh-CN", "zh-TW", "en-US", "ja-JP", "de-DE", "pt-BR",
-                     "hi-IN", "es-ES", "fr-FR", "ar-SA", "bn-BD", "ru-RU"
+                     "hi-IN", "es-ES", "fr-FR", "ar-SA", "bn-BD", "ru-RU",
+                     "ko-KR"
                  })
         {
             Assert.Contains($"\"{locale}\"", source, StringComparison.Ordinal);
         }
 
-        Assert.Contains("Window.Settings.Title", source, StringComparison.Ordinal);
+        Assert.Contains("Settings.WindowTitle", source, StringComparison.Ordinal);
         Assert.Contains("Search.Action.OpenSettings", source, StringComparison.Ordinal);
         string diagnostic = source[
             source.IndexOf("CaptureAotSmokeResourceDiagnostics", StringComparison.Ordinal)..];

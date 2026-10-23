@@ -134,6 +134,12 @@ public sealed partial class FileSurfaceContent
                     _ => HorizontalAlignment.Left
                 };
             editor.TextWrapping = nameText.TextWrapping;
+            if (!ViewModel.IsListMode)
+            {
+                // The icon-mode editor grows downward; anchor the text to the
+                // label position instead of centering in the taller box.
+                editor.VerticalContentAlignment = VerticalAlignment.Top;
+            }
         }
         else
         {
@@ -155,6 +161,7 @@ public sealed partial class FileSurfaceContent
         editor.Visibility = Visibility.Visible;
         editor.IsHitTestVisible = true;
         _stackPopoverItemRenameOpenedAtTick = Environment.TickCount64;
+        SetItemsViewScrollingSuspended(true);
         App.Current?.WidgetManager?.BeginWidgetInteraction(
             "surface-stack-popover-item-rename-opened");
         SelectItemNameForRename(editor, renameItem.IsFolder);
@@ -221,14 +228,35 @@ public sealed partial class FileSurfaceContent
         double hostWidth = Math.Max(60, contentHost.ActualWidth);
         double hostHeight = Math.Max(20, contentHost.ActualHeight);
         double availableWidth = Math.Max(60, hostWidth - offsetX - 8);
-        double maxEditorWidth = Math.Max(60, Math.Min(280, hostWidth));
         double width = isListMode
-            ? Math.Min(maxEditorWidth, Math.Max(80, availableWidth))
+            ? Math.Min(hostWidth, Math.Max(80, availableWidth))
             : Math.Clamp(
                 target.ActualWidth +
                     (2 * (border + horizontalPadding)),
                 60,
-                Math.Min(maxEditorWidth, availableWidth));
+                Math.Min(hostWidth, availableWidth));
+
+        double height = Math.Max(target.ActualHeight + (2 * border), 20);
+        height = Math.Min(
+            height,
+            Math.Max(20, hostHeight - offsetY - 4));
+        if (!isListMode && target is TextBlock nameTarget &&
+            double.IsFinite(nameTarget.MaxWidth))
+        {
+            // Desktop-style rename: keep the label width, grow downward,
+            // wrap the full name until the popover bottom.
+            double fullTextHeight = MeasureRenameTextHeight(
+                editor.Text,
+                editor.FontSize,
+                nameTarget.MaxWidth);
+            height = Math.Max(
+                height,
+                SelectedNameExpansionPolicy.ClampRenameEditorHeight(
+                    fullTextHeight + 6,
+                    target.ActualHeight + (2 * border),
+                    hostHeight - offsetY - 4,
+                    20));
+        }
 
         if (!isListMode)
         {
@@ -236,10 +264,6 @@ public sealed partial class FileSurfaceContent
             offsetX = Math.Clamp(offsetX, 0, Math.Max(0, hostWidth - width));
         }
 
-        double height = Math.Max(target.ActualHeight + (2 * border), 20);
-        height = Math.Min(
-            height,
-            Math.Max(20, hostHeight - offsetY - 4));
         editor.Width = width;
         editor.Height = height;
         editor.Margin = new Thickness(offsetX, offsetY, 0, 0);
@@ -355,6 +379,7 @@ public sealed partial class FileSurfaceContent
             editor.Margin = new Thickness(0);
         }
 
+        SetItemsViewScrollingSuspended(false);
         if (_stackPopoverItemRenameNameText is { } nameText)
         {
             nameText.Visibility = _stackPopoverItemRenameOriginalVisibility;

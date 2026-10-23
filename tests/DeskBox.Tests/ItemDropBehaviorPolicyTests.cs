@@ -105,6 +105,42 @@ public sealed class ItemDropBehaviorPolicyTests
     }
 
     [Fact]
+    public void RecycleBinNamespaceShortcuts_Delete()
+    {
+        // Pre-resolved kind: the lazy classifier is exercised by its own
+        // tests; here the policy must simply honor the cached verdict.
+        var bin = new WidgetItem
+        {
+            Path = @"C:\grid\Recycle Bin - Shortcut.lnk",
+            IsFolder = false,
+            IsShortcut = true
+        };
+        bin.NamespaceShortcutKind = NamespaceShortcutKind.RecycleBin;
+        bin.IsNamespaceShortcutKindResolved = true;
+
+        Assert.Equal(
+            ItemDropBehavior.RecycleBinDelete,
+            ItemDropBehaviorPolicy.Resolve(bin));
+    }
+
+    [Fact]
+    public void OtherNamespaceShortcuts_AreNotDropTargets()
+    {
+        var thisPc = new WidgetItem
+        {
+            Path = @"C:\grid\This PC - Shortcut.lnk",
+            IsFolder = false,
+            IsShortcut = true
+        };
+        thisPc.NamespaceShortcutKind = NamespaceShortcutKind.ThisPC;
+        thisPc.IsNamespaceShortcutKindResolved = true;
+
+        Assert.Equal(
+            ItemDropBehavior.None,
+            ItemDropBehaviorPolicy.Resolve(thisPc));
+    }
+
+    [Fact]
     public void ConsumedShortcutDrops_NeverFallBackToImport()
     {
         // Importing relocates the user's files, so a shortcut drop that did not

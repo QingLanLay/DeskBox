@@ -32,20 +32,17 @@ public sealed partial class FileSurfaceContent
 
         MenuFlyout flyout = CreateItemFlyout(target);
         string propertiesText = T("Common.Properties");
-        MenuFlyoutItem propertiesItem = flyout.Items
-            .OfType<MenuFlyoutItem>()
-            .Single(item => string.Equals(
-                item.Text,
-                propertiesText,
-                StringComparison.Ordinal));
-        int propertiesIndex = flyout.Items.IndexOf(propertiesItem);
-        var menuItems = flyout.Items
-            .Select((item, index) => new AotFilePropertiesMenuItemSnapshot(
-                index,
-                item.GetType().Name,
-                item is MenuFlyoutItem menuItem ? menuItem.Text : string.Empty,
-                item is not MenuFlyoutItem enabledItem || enabledItem.IsEnabled,
-                ReferenceEquals(item, propertiesItem)))
+        MenuFlyoutItem propertiesItem = AotContextMenuProbe.FindItem(
+            flyout,
+            propertiesText);
+        int propertiesIndex = AotContextMenuProbe.IndexOf(flyout, propertiesItem);
+        var menuItems = AotContextMenuProbe.Snapshot(flyout, propertiesItem)
+            .Select(entry => new AotFilePropertiesMenuItemSnapshot(
+                entry.Index,
+                entry.ItemType,
+                entry.Text,
+                entry.IsEnabled,
+                entry.IsTarget))
             .ToArray();
 
         if (!propertiesItem.IsEnabled ||
@@ -86,14 +83,8 @@ public sealed partial class FileSurfaceContent
         FeedbackRequested += OnFeedbackRequested;
         try
         {
-            var peer = new MenuFlyoutItemAutomationPeer(propertiesItem);
-            if (peer.GetPattern(PatternInterface.Invoke) is not
-                IInvokeProvider invokeProvider)
-            {
-                throw new InvalidOperationException(
-                    "The product Properties menu item did not expose Invoke automation.");
-            }
-
+            IInvokeProvider invokeProvider =
+                AotContextMenuProbe.InvokeProvider(propertiesItem);
             invokeProvider.Invoke();
             AotFilePropertiesInvocationSnapshot invocation =
                 await AotFilePropertiesFixture.WaitForInvocationResultAsync(
@@ -106,7 +97,7 @@ public sealed partial class FileSurfaceContent
                 target.Name,
                 target.Path,
                 _hostWindowHandle.ToInt64(),
-                flyout.Items.Count,
+                AotContextMenuProbe.Count(flyout),
                 propertiesIndex,
                 propertiesItem.Text,
                 propertiesItem.IsEnabled,

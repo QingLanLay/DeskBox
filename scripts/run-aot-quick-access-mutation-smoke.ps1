@@ -371,9 +371,9 @@ function Assert-MutationResult {
     if ($AllowExpectedFailure.IsPresent) {
         if ($smokeResult.State -ne "Failed" -or
             [bool]$smokeResult.Success -or
-            -not ([string]$smokeResult.Error).Contains(
+            -not (([string]$smokeResult.Error).IndexOf(
                 "intentional-after-pin",
-                [StringComparison]::Ordinal)) {
+                [StringComparison]::Ordinal) -ge 0)) {
             throw "AOT Quick Access $($Run.Phase) did not produce the expected in-process failure."
         }
     }

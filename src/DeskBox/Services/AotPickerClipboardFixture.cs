@@ -66,8 +66,13 @@ internal static class AotPickerClipboardFixture
             ClipboardSourceDirectoryName));
         string pickerFileName = $"picker-{runId}.txt";
         string clipboardFileName = $"storage-file-{runId}.txt";
-        string clipboardFolderName = $"storage-folder-{runId}";
-        string nestedFileName = $"nested-{runId}.txt";
+        // The nested pair drops the runId suffix: the full source path
+        // (deep evidence root + two runId-bearing segments) exceeded
+        // MAX_PATH, which failed the nested file write with a misleading
+        // "part of the path not found". The per-run fixture root already
+        // guarantees uniqueness.
+        string clipboardFolderName = "storage-folder";
+        string nestedFileName = "nested.txt";
 
         if (!Directory.Exists(fixtureRoot) ||
             !Directory.Exists(widgetRoot) ||
@@ -184,6 +189,18 @@ internal static class AotPickerClipboardFixture
                 }
 
                 bool destroyed = !IsSamePickerWindow(candidate);
+                if (!destroyed)
+                {
+                    // Diagnostic for the zombie-picker investigation: the
+                    // cancel branch completed (the pick task returned) yet the
+                    // dialog HWND survived the full close window. Record what
+                    // that lingering window looks like before reporting.
+                    App.Log(
+                        "[AotPickerClipboard] Dialog survived the close window: " +
+                        $"title='{candidate.Title}' visible={Win32Helper.IsWindowVisible(candidate.WindowHandle)} " +
+                        $"handle={candidate.WindowHandle} thread={candidate.WindowThreadId} pid={candidate.ProcessId}");
+                }
+
                 return new AotPickerDialogSnapshot(
                     action,
                     candidate.WindowHandle.ToInt64(),

@@ -89,6 +89,12 @@ public sealed partial class TodoWidgetContent
             return false;
         }
 
-        return await ViewModel.DeleteAttachmentAsync(item.Id, attachment.Id);
+        // The view layer owns the App scope: hand the view model the
+        // file-safety recycle kernel for the managed copy's deletion.
+        FileService? fileService = (App.Current as App)?.FileService;
+        return await ViewModel.DeleteAttachmentAsync(
+            item.Id,
+            attachment.Id,
+            fileService is null ? null : path => fileService.DeleteEntryAsync(path, recycle: true));
     }
 }

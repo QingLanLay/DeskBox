@@ -5,6 +5,93 @@ namespace DeskBox.Tests;
 
 public sealed class FolderRefreshPolicyTests
 {
+    /// <summary>
+    /// Pins the folder-count freshness rule for refresh merges: snapshots
+    /// are enumerated with folder item counts unloaded, so an unchanged
+    /// folder (same LastWriteTime) keeps its loaded count instead of being
+    /// re-enumerated on every activation reconciliation.
+    /// </summary>
+    [Fact]
+    public void UnchangedFolder_KeepsItsLoadedCount()
+    {
+        var stamp = new DateTime(2026, 10, 13, 12, 0, 0);
+
+        Assert.True(WidgetViewModel.DeriveFolderItemCountLoaded(
+            targetIsFolder: true,
+            targetIsLoaded: true,
+            targetLastModified: stamp,
+            sourceIsFolder: true,
+            sourceIsLoaded: false,
+            sourceLastModified: stamp));
+    }
+
+    [Fact]
+    public void ChangedFolder_LosesItsLoadedCount()
+    {
+        Assert.False(WidgetViewModel.DeriveFolderItemCountLoaded(
+            targetIsFolder: true,
+            targetIsLoaded: true,
+            targetLastModified: new DateTime(2026, 10, 13, 12, 0, 0),
+            sourceIsFolder: true,
+            sourceIsLoaded: false,
+            sourceLastModified: new DateTime(2026, 10, 13, 12, 30, 0)));
+    }
+
+    [Fact]
+    public void UnloadedFolder_AndNonFolderItems_FollowTheSnapshot()
+    {
+        var stamp = new DateTime(2026, 10, 13, 12, 0, 0);
+
+        // Never loaded on the target: nothing to keep.
+        Assert.False(WidgetViewModel.DeriveFolderItemCountLoaded(
+            targetIsFolder: true,
+            targetIsLoaded: false,
+            targetLastModified: stamp,
+            sourceIsFolder: true,
+            sourceIsLoaded: false,
+            sourceLastModified: stamp));
+        // Files are born loaded in snapshots; the source-loaded clause wins
+        // regardless of item kind.
+        Assert.True(WidgetViewModel.DeriveFolderItemCountLoaded(
+            targetIsFolder: false,
+            targetIsLoaded: true,
+            targetLastModified: stamp,
+            sourceIsFolder: false,
+            sourceIsLoaded: true,
+            sourceLastModified: stamp));
+        Assert.True(WidgetViewModel.DeriveFolderItemCountLoaded(
+            targetIsFolder: true,
+            targetIsLoaded: false,
+            targetLastModified: stamp,
+            sourceIsFolder: true,
+            sourceIsLoaded: true,
+            sourceLastModified: stamp.AddDays(1)));
+    }
+
+    /// <summary>
+    /// The freshness decision must be derived before the merge overwrites
+    /// <c>target.LastModified</c> with the incoming snapshot value — after
+    /// the overwrite the timestamps always compare equal and the rule
+    /// silently degenerates to "always keep".
+    /// </summary>
+    [Fact]
+    public void FolderCountFreshness_IsDerivedBeforeTheTimestampOverwrite()
+    {
+        string watchers = File.ReadAllText(
+            TestPaths.FromRepository(
+                "src/DeskBox/ViewModels/WidgetViewModel.SortingAndWatchers.cs"));
+        int derive = watchers.IndexOf(
+            "DeriveFolderItemCountLoaded(",
+            StringComparison.Ordinal);
+        int overwrite = watchers.IndexOf(
+            "target.LastModified = source.LastModified;",
+            StringComparison.Ordinal);
+        Assert.True(
+            derive >= 0 && overwrite > derive,
+            "The folder-count freshness decision must be derived before " +
+            "LastModified is overwritten in the merge.");
+    }
+
     [Fact]
     public async Task CompleteParentSnapshot_DistinguishesPresentFromNotFound()
     {
@@ -132,10 +219,17 @@ public sealed class FolderRefreshPolicyTests
                 new FileService.FileTransferPlan(secondSource, secondDestination)
             };
 
-            Assert.False(FileService.AreAllShellMovesCompleted(plans));
+            // The retired batch helper was exactly this fold over the
+            // shared per-move completion predicate (the first source never
+            // exists, so only the second plan starts incomplete).
+            Assert.False(plans.All(plan => FileService.IsCompletedShellMove(
+                plan.SourcePath,
+                plan.DestinationPath)));
 
             File.Delete(secondSource);
-            Assert.True(FileService.AreAllShellMovesCompleted(plans));
+            Assert.True(plans.All(plan => FileService.IsCompletedShellMove(
+                plan.SourcePath,
+                plan.DestinationPath)));
         }
         finally
         {

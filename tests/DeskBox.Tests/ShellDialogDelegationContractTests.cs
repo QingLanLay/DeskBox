@@ -29,7 +29,7 @@ public sealed class ShellDialogDelegationContractTests
             helperStart,
             StringComparison.Ordinal);
         int helperEnd = fileService.IndexOf(
-            "    private static void MoveEntriesWithShellProgress(",
+            "    public async Task RelocateDirectoryAsync(",
             helperIndex + helperStart.Length,
             StringComparison.Ordinal);
         Assert.True(helperIndex >= 0 && helperEnd > helperIndex,
@@ -45,20 +45,27 @@ public sealed class ShellDialogDelegationContractTests
     [Fact]
     public void ShellMove_KeepsTheNameConflictDialogAvailable()
     {
-        string fileService = Read("src/DeskBox/Services/FileService.cs");
+        string shellTransfer = Read("src/DeskBox/Services/FileService.ShellTransfer.cs");
 
-        // Every FoMove flag list must skip FofNoConfirmation so a plan/execute
-        // race surfaces the native Replace/Keep-both dialog instead of a
-        // silent overwrite (Native AOT channel).
-        foreach (Match move in Regex.Matches(
-                     fileService,
-                     @"Function = FoMove,.*?SHFileOperation",
-                     RegexOptions.Singleline))
-        {
-            Assert.False(
-                move.Value.Contains("FofNoConfirmation", StringComparison.Ordinal),
-                "A FoMove operation suppresses the Shell conflict dialog again.");
-        }
+        // The modern engine's operation flags must skip the confirmation
+        // suppression so a plan/execute race surfaces the native
+        // Replace/Keep-both dialog instead of a silent overwrite. (The
+        // legacy FoMove flag lists were retired with the SHFileOperation
+        // bridge, 2026-10-13.)
+        int flags = shellTransfer.IndexOf(
+            "fileOperation.SetOperationFlags(",
+            StringComparison.Ordinal);
+        Assert.True(flags >= 0, "The modern engine no longer sets operation flags.");
+        int flagsEnd = shellTransfer.IndexOf(");", flags, StringComparison.Ordinal);
+        string flagList = shellTransfer[flags..flagsEnd];
+        Assert.Contains(
+            "ShellFileOperationNoConfirmMakeDirectory",
+            flagList,
+            StringComparison.Ordinal);
+        Assert.DoesNotContain(
+            "NoConfirmation",
+            flagList,
+            StringComparison.Ordinal);
     }
 
     [Fact]
@@ -115,6 +122,50 @@ public sealed class ShellDialogDelegationContractTests
         Assert.Matches(
             @"return isDeskBoxFileDrag\s*\n\s*\?\s*DataPackageOperation\.None\s*\n\s*:\s*DataPackageOperation\.Move;",
             surface);
+    }
+
+    [Fact]
+    public void ModernShellEngine_KeepsUndoOwnershipInApp()
+    {
+        // Undo-ownership decision (2026-10-13): DeskBox owns undo through its
+        // own receipts and history entries. Shell transfers must not add
+        // Explorer undo records (FOF_ALLOWUNDO / FOFX_ADDUNDORECORD) for
+        // moves and copies — a shell-side Ctrl+Z would race the in-app undo
+        // and diverge state.
+        string shellTransfer = Read("src/DeskBox/Services/FileService.ShellTransfer.cs");
+        Assert.Contains(
+            "Deliberately no FOF_ALLOWUNDO / FOFX_ADDUNDORECORD",
+            shellTransfer,
+            StringComparison.Ordinal);
+        Assert.DoesNotContain("0x20000000", shellTransfer, StringComparison.Ordinal);
+        Assert.DoesNotContain("FofAllowUndo", shellTransfer, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void AllowUndoFlag_StaysScopedToTheRecycleBinDeleteChannel()
+    {
+        string fileService = Read("src/DeskBox/Services/FileService.cs");
+
+        // Definition + the single delete-channel usage; a third occurrence
+        // means someone wired undo records into another operation family.
+        Assert.Equal(
+            2,
+            CountOrdinalOccurrences(
+                fileService,
+                "FofAllowUndo"));
+    }
+
+    private static int CountOrdinalOccurrences(string source, string value)
+    {
+        int count = 0;
+        int index = 0;
+        while ((index = source.IndexOf(value, index, StringComparison.Ordinal)) >= 0)
+        {
+            count++;
+            index += value.Length;
+        }
+
+        return count;
     }
 
     private static string Read(string relativePath) =>

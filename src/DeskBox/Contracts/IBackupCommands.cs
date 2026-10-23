@@ -39,7 +39,13 @@ public interface IBackupBackend
 {
     bool LocalScheduleEnabled { get; }
     bool CloudScheduleEnabled { get; }
-    void RefreshOptions();
+
+    /// <summary>
+    /// Re-reads effective options from settings and pushes them to the local
+    /// and cloud services. Returns whether the effective scheduling options
+    /// actually changed, so callers can skip redundant schedule evaluations.
+    /// </summary>
+    bool RefreshOptions();
     Task PrepareManualBackupAsync(CancellationToken cancellationToken);
     Task<LocalBackupResult> CreateSnapshotAsync(bool force, CancellationToken cancellationToken);
     Task<string> ExportAsync(string destinationDirectory, CancellationToken cancellationToken);

@@ -6,6 +6,25 @@ namespace DeskBox.Tests;
 public sealed class DesktopWidgetNativeLayerTests
 {
     [Fact]
+    public void SuspendedRecovery_PreservesWindowOrderAndDoesNotReportACompletedRestore()
+    {
+        WidgetLayerService.SetSessionRecoverySuspended(true);
+        try
+        {
+            IntPtr foreground = Win32Helper.GetForegroundWindow();
+            Assert.Equal(foreground, WidgetLayerService.ClearTopMostPreservingForeground(
+                IntPtr.Zero, out RelativeLayerRestoreDisposition disposition));
+            Assert.Equal(RelativeLayerRestoreDisposition.PreservePeerOrder, disposition);
+            Assert.False(WidgetLayerService.RestoreGroupPreservingForeground(
+                [], "test-session-suspended"));
+        }
+        finally
+        {
+            WidgetLayerService.SetSessionRecoverySuspended(false);
+        }
+    }
+
+    [Fact]
     public void BottomDemotion_NeverPassesThroughTheFrontOfTheApplicationBand()
     {
         using var application = new TestWindow();

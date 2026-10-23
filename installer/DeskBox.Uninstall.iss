@@ -5,6 +5,13 @@ const
   DeskBoxDefaultManagedStorageRootPath = '{%USERPROFILE}\DeskBox';
   DeskBoxAppDataRootPath = '{localappdata}\DeskBox';
   DeskBoxRecoveryRootPath = '{localappdata}\DeskBox-Recovery';
+  // Identity Name of the Microsoft Store (MSIX) package declared in
+  // src\DeskBox\Package.appxmanifest. The Store edition keeps its data inside
+  // its own MSIX LocalCache, separate from the two data roots above, so this
+  // uninstaller never deletes Store data; while the Store edition is present
+  // (or its state cannot be verified) those roots are still kept as a
+  // conservative safety measure.
+  DeskBoxStorePackageIdentityName = 'D1FC332A.DeskBoxWidgets';
   DeskBoxTemporaryRootPath = '{%TEMP}\DeskBox';
   DeskBoxProductRegistryKey = 'Software\DeskBox';
   DeskBoxStartupRunKey = 'Software\Microsoft\Windows\CurrentVersion\Run';
@@ -16,6 +23,13 @@ const
   DeskBoxPurgeUserDataParameter = '/PURGEUSERDATA';
   DeskBoxManagedStorageShortcutFileName = 'DeskBox Files.lnk';
   DeskBoxManagedStorageShortcutDescription = 'DeskBox managed storage';
+  // Three states of the Microsoft Store edition probe: not registered for the
+  // current user, registered for the current user, or unverifiable. Unknown
+  // is handled exactly like installed (fail closed) so shared user content is
+  // never purged while the Store edition's presence is in doubt.
+  StoreDeskBoxStateNotInstalled = 0;
+  StoreDeskBoxStateInstalled = 1;
+  StoreDeskBoxStateUnknown = 2;
 
 var
   PurgeDeskBoxAppData: Boolean;
@@ -279,6 +293,16 @@ var
   NewShortcutPath: string;
 begin
   FolderPath := GetManagedStorageRootPath;
+
+  // The shortcut is a recovery affordance for a person watching the
+  // uninstaller; silent runs have nobody to ask and must not spawn desktop
+  // icons (a suppressed prompt would fall through to the default Yes).
+  if UninstallSilent then
+  begin
+    Log('DeskBox silent uninstall skipped the managed storage shortcut offer. Managed storage root: ' + FolderPath);
+    Exit;
+  end;
+
   if not FolderContainsManagedStorageItems(FolderPath) then
     Exit;
 
@@ -428,6 +452,85 @@ begin
   end;
 end;
 
+function GetStoreDeskBoxInstallState: Integer;
+var
+  ResultCode: Integer;
+begin
+  // Three-state probe for the Microsoft Store edition. The Store edition
+  // stores its data in its own MSIX LocalCache, not in the data roots this
+  // uninstaller manages, so the result only decides whether the direct
+  // edition's data may be purged. Get-AppxPackage without -AllUsers only
+  // reports packages registered for the current user, which is the same
+  // profile whose data this uninstaller would purge: purging only happens
+  // outside admin install mode (see InitializeUninstall), and even an
+  // all-users uninstaller is elevated from the initiating user's session, so
+  // that user's package registration is the one that matters. PowerShell exit
+  // codes: 0 = the package is registered for this user, 1 = Get-AppxPackage
+  // returned nothing (not installed), 2 = the probe itself failed, 3 = the
+  // probe exceeded its 30-second Wait-Job budget, anything else = the probe
+  // failed unexpectedly. A failed or timed-out probe never silently becomes
+  // "not installed": systems without the AppX platform are short-circuited
+  // by the pre-check below before PowerShell is spawned, and every other
+  // failure stays Unknown, which callers treat as installed.
+  Result := StoreDeskBoxStateUnknown;
+
+  // Platform pre-check, using only native Inno Setup calls so no extra
+  // process is spawned. LTSC and stripped-down Windows ship without the AppX
+  // platform: with neither the %WINDIR%\System32\WindowsApps directory nor
+  // the AppXSvc service present, no Store edition can be installed at all,
+  // so the purge may proceed. It runs before the PowerShell probe so those
+  // systems never spawn a process that cannot answer the question. On an
+  // AppX-capable system the state stays Unknown and callers must fail closed.
+  if (not DirExists(ExpandConstant('{win}\System32\WindowsApps'))) and
+     (not RegKeyExists(HKEY_LOCAL_MACHINE, 'SYSTEM\CurrentControlSet\Services\AppXSvc')) then
+  begin
+    Result := StoreDeskBoxStateNotInstalled;
+    Log('DeskBox uninstall found no AppX platform (WindowsApps directory and AppXSvc service are absent); the Microsoft Store edition cannot be installed.');
+    Exit;
+  end;
+
+  // The Get-AppxPackage probe runs inside a PowerShell job with a hard
+  // 30-second budget: a wedged AppX repository must not hang the uninstall
+  // entry points that call this function. A job's exit code does not
+  // propagate to the parent, so the job scriptblock reports 0/1/2 as its
+  // output and the outer script maps that output to its own exit codes;
+  // a timeout stops and removes the job and exits 3, which lands in the
+  // catch-all branch below (Unknown, fail closed).
+  if not Exec(
+       ExpandConstant('{sys}\WindowsPowerShell\v1.0\powershell.exe'),
+       '-NoProfile -NonInteractive -ExecutionPolicy Bypass -Command "try { $job = Start-Job { try { if (Get-AppxPackage -Name ''' +
+         DeskBoxStorePackageIdentityName +
+         ''' -ErrorAction Stop) { 0 } else { 1 } } catch { 2 } }; if (Wait-Job -Job $job -Timeout 30) { $code = Receive-Job -Job $job; ' +
+         'Remove-Job -Job $job -Force; if ($code -eq 0) { exit 0 }; if ($code -eq 1) { exit 1 }; exit 2 }; ' +
+         'Stop-Job -Job $job; Remove-Job -Job $job -Force; exit 3 } catch { exit 2 }"',
+       '',
+       SW_HIDE,
+       ewWaitUntilTerminated,
+       ResultCode) then
+    Log('DeskBox uninstall could not start the Microsoft Store edition detection.')
+  else
+  begin
+    case ResultCode of
+      0:
+        begin
+          Result := StoreDeskBoxStateInstalled;
+          Log('DeskBox uninstall detected the Microsoft Store edition for the current user.');
+          Exit;
+        end;
+      1:
+        begin
+          Result := StoreDeskBoxStateNotInstalled;
+          Log('DeskBox uninstall found no Microsoft Store edition for the current user.');
+          Exit;
+        end;
+    else
+      Log('DeskBox uninstall could not detect the Microsoft Store edition (PowerShell exit code ' + IntToStr(ResultCode) + ').');
+    end;
+  end;
+
+  Log('DeskBox uninstall could not verify the Microsoft Store edition on an AppX-capable system; treating it as installed to protect user data.');
+end;
+
 function ChooseAppDataRemoval: Boolean;
 var
   Choice: Integer;
@@ -438,7 +541,32 @@ begin
   PurgeDeskBoxAppData := HasUninstallParameter(DeskBoxPurgeUserDataParameter);
   if PurgeDeskBoxAppData then
   begin
-    Log('DeskBox uninstall will purge application data because /PURGEUSERDATA was specified.');
+    case GetStoreDeskBoxInstallState of
+      StoreDeskBoxStateInstalled:
+        begin
+          PurgeDeskBoxAppData := False;
+          Log('DeskBox uninstall skipped the /PURGEUSERDATA purge because the Microsoft Store edition is still installed for this user.');
+          // Interactive callers deserve the same explanation the Unknown
+          // branch gets; silent runs suppress this automatically.
+          SuppressibleMsgBox(
+            ExpandConstant('{cm:StoreEditionDataPreserved}'),
+            mbInformation,
+            MB_OK,
+            IDOK);
+        end;
+      StoreDeskBoxStateUnknown:
+        begin
+          PurgeDeskBoxAppData := False;
+          Log('DeskBox uninstall skipped the /PURGEUSERDATA purge because the Microsoft Store edition state could not be verified.');
+          SuppressibleMsgBox(
+            ExpandConstant('{cm:StoreEditionStateUnknown}'),
+            mbInformation,
+            MB_OK,
+            IDOK);
+        end;
+    else
+      Log('DeskBox uninstall will purge application data because /PURGEUSERDATA was specified.');
+    end;
     Result := True;
     Exit;
   end;
@@ -467,8 +595,33 @@ begin
       end;
     IDNO:
       begin
-        PurgeDeskBoxAppData := True;
-        Log('DeskBox uninstall will permanently remove application data and recovery snapshots.');
+        case GetStoreDeskBoxInstallState of
+          StoreDeskBoxStateInstalled:
+            begin
+              PurgeDeskBoxAppData := False;
+              Log('DeskBox uninstall preserved application data because the Microsoft Store edition is still installed for this user.');
+              SuppressibleMsgBox(
+                ExpandConstant('{cm:StoreEditionDataPreserved}'),
+                mbInformation,
+                MB_OK,
+                IDOK);
+            end;
+          StoreDeskBoxStateUnknown:
+            begin
+              PurgeDeskBoxAppData := False;
+              Log('DeskBox uninstall preserved application data because the Microsoft Store edition state could not be verified.');
+              SuppressibleMsgBox(
+                ExpandConstant('{cm:StoreEditionStateUnknown}'),
+                mbInformation,
+                MB_OK,
+                IDOK);
+            end;
+        else
+          begin
+            PurgeDeskBoxAppData := True;
+            Log('DeskBox uninstall will permanently remove application data and recovery snapshots.');
+          end;
+        end;
         Result := True;
       end;
     else
@@ -796,7 +949,15 @@ begin
     RemoveStartupScheduledTasks;
 
     if IsAdminInstallMode then
-      Log('DeskBox all-users uninstall preserved per-user startup entries, notifications, settings, and content.')
+    begin
+      // The usual split-token elevation keeps HKCU on the initiating user,
+      // and RemoveStartupRegistryEntry is owner-checked against {app}, so
+      // calling it here removes the initiating user's dead Run entry without
+      // touching another installation. Other per-user surfaces (notifications,
+      // settings, content) stay preserved as before.
+      RemoveStartupRegistryEntry;
+      Log('DeskBox all-users uninstall preserved per-user notifications, settings, and content.')
+    end
     else
     begin
       RemoveStartupRegistryEntry;

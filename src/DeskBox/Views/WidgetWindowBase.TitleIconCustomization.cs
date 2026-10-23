@@ -17,8 +17,10 @@ public abstract partial class WidgetWindowBase
 {
     private string? _customTitleIconSourcePath;
     private ImageSource? _customTitleIconSource;
+    private string? _customTitleIconLoadFailedPath;
     private string? _customBackgroundSourcePath;
     private ImageSource? _customBackgroundSource;
+    private string? _customBackgroundLoadFailedPath;
     private string? _customPanoramaSourcePath;
     private ImageSource? _customPanoramaSource;
     private bool _customBackgroundSurfaceReleased;
@@ -43,10 +45,10 @@ public abstract partial class WidgetWindowBase
     }
 
     /// <summary>
-    /// Resolves the widget background: a per-widget image wins, then the
-    /// global appearance mode (unified image or panorama sampling), then the
-    /// global window material. Per-widget fit/dim overrides apply on top of
-    /// whichever background is active.
+    /// Resolves the widget background: a per-widget image wins, then a
+    /// per-widget solid color, then the global appearance mode (unified image
+    /// or panorama sampling), then the global window material. Per-widget
+    /// fit/dim overrides apply on top of whichever background is active.
     /// </summary>
     protected void ApplyCustomWidgetBackground()
     {
@@ -55,6 +57,7 @@ public abstract partial class WidgetWindowBase
         WidgetShellSettingsSlice shellSettings = settings.WidgetShell;
         string mode = WidgetBackgroundModeKinds.Normalize(shellSettings.WidgetBackgroundMode);
         string? ownFile = WidgetBackgroundCustomization.GetImageFileNameOverride(Config);
+        string? ownColor = WidgetBackgroundCustomization.GetColorOverride(Config);
 
         ImageSource? panoramaSource = null;
         string? imagePath = null;
@@ -81,8 +84,19 @@ public abstract partial class WidgetWindowBase
         }
 
         shell.CustomBackgroundPanoramaSource = panoramaSource;
-        shell.CustomBackgroundSource = ResolveCustomBackgroundSource(imagePath);
+        // Per-widget images stream per window; the shared unified image
+        // resolves through the process-wide cache so every window reuses
+        // one decode.
+        shell.CustomBackgroundSource = ResolveCustomBackgroundSource(
+            imagePath,
+            shared: ownFile is null);
         shell.CustomBackgroundFit = fit;
+        // The color only shows when no image layer resolved — image wins,
+        // per-widget color beats the global image modes, the material is the
+        // floor for everything.
+        shell.CustomBackgroundColorHex = imagePath is null && panoramaSource is null
+            ? ownColor
+            : null;
         shell.CustomBackgroundDim =
             WidgetBackgroundCustomization.ResolveEffectiveDimPercent(Config, settings) / 100d;
         _customBackgroundSurfaceReleased = false;
@@ -104,16 +118,19 @@ public abstract partial class WidgetWindowBase
     }
 
     /// <summary>
-    /// Drops the memoized sources after a commit: a re-pick writes a new
-    /// image to the SAME stored file name, so the path alone cannot detect
-    /// content changes.
+    /// Drops the memoized sources and load-failure pins after a commit: a
+    /// re-pick writes a new image to the SAME stored file name, so the
+    /// path alone cannot detect content changes, and a failed decode gets
+    /// one fresh attempt per commit.
     /// </summary>
     protected void InvalidateCustomAssetSources()
     {
         _customTitleIconSourcePath = null;
         _customTitleIconSource = null;
+        _customTitleIconLoadFailedPath = null;
         _customBackgroundSourcePath = null;
         _customBackgroundSource = null;
+        _customBackgroundLoadFailedPath = null;
         _customPanoramaSourcePath = null;
         _customPanoramaSource = null;
     }
@@ -146,9 +163,12 @@ public abstract partial class WidgetWindowBase
 
     /// <summary>
     /// Repositions the shared panorama image so the slice under the window's
-    /// desktop position lands inside the plate. Pure math plus one Win32
-    /// rect read — no decode — so window drags update the sampled slice in
-    /// real time.
+    /// desktop position lands inside the plate. Pure math plus Win32 rect
+    /// reads — no decode — so window drags update the sampled slice in real
+    /// time. The fit is per-monitor (the wallpaper model: each monitor fills
+    /// itself with the image); fitting the whole virtual-desktop union only
+    /// works on single-DPI setups and rendered zoomed slices on mixed-DPI
+    /// screens that never recovered after switching back.
     /// </summary>
     protected void UpdateCustomPanoramaViewport()
     {
@@ -156,39 +176,22 @@ public abstract partial class WidgetWindowBase
             bitmap.PixelWidth <= 0 ||
             bitmap.PixelHeight <= 0 ||
             HWnd == IntPtr.Zero ||
-            !Win32Helper.GetWindowRect(HWnd, out Win32Helper.RECT windowRect))
+            !Win32Helper.GetWindowRect(HWnd, out Win32Helper.RECT windowRect) ||
+            !Win32Helper.TryGetWindowMonitorRect(HWnd, out Win32Helper.RECT monitorRect))
         {
             return;
         }
 
-        double canvasX = Win32Helper.GetSystemMetrics(Win32Helper.SM_XVIRTUALSCREEN);
-        double canvasY = Win32Helper.GetSystemMetrics(Win32Helper.SM_YVIRTUALSCREEN);
-        double canvasWidth = Win32Helper.GetSystemMetrics(Win32Helper.SM_CXVIRTUALSCREEN);
-        double canvasHeight = Win32Helper.GetSystemMetrics(Win32Helper.SM_CYVIRTUALSCREEN);
-        Windows.Foundation.Rect? fitted = WidgetBackgroundPanoramaCalculator.ComputeViewbox(
-            bitmap.PixelWidth,
-            bitmap.PixelHeight,
-            canvasX,
-            canvasY,
-            canvasWidth,
-            canvasHeight,
-            windowRect.Left,
-            windowRect.Top,
-            windowRect.Right - windowRect.Left,
-            windowRect.Bottom - windowRect.Top);
-        if (fitted is null)
-        {
-            return;
-        }
-
-        // The calculator clamps the sampled rect; the placement instead needs
-        // the full fitted rect relative to the window so the image extends
-        // beyond the plate on every side and the clip picks the slice.
-        double scale = Math.Max(canvasWidth / bitmap.PixelWidth, canvasHeight / bitmap.PixelHeight);
-        double fittedWidth = bitmap.PixelWidth * scale;
-        double fittedHeight = bitmap.PixelHeight * scale;
-        double fittedX = canvasX - (fittedWidth - canvasWidth) / 2;
-        double fittedY = canvasY - (fittedHeight - canvasHeight) / 2;
+        double monitorWidth = monitorRect.Right - monitorRect.Left;
+        double monitorHeight = monitorRect.Bottom - monitorRect.Top;
+        (double offsetX, double offsetY, double fittedWidth, double fittedHeight) =
+            WidgetBackgroundPanoramaCalculator.ComputeMonitorFit(
+                bitmap.PixelWidth,
+                bitmap.PixelHeight,
+                monitorWidth,
+                monitorHeight);
+        double fittedX = monitorRect.Left + offsetX;
+        double fittedY = monitorRect.Top + offsetY;
         double dipScale = Win32Helper.GetDpiScaleForWindow(HWnd, xamlRoot: null);
         if (!double.IsFinite(dipScale) || dipScale <= 0)
         {
@@ -204,24 +207,61 @@ public abstract partial class WidgetWindowBase
 
     private ImageSource? ResolveCustomTitleIconSource(string? path)
     {
+        if (string.Equals(_customTitleIconLoadFailedPath, path, StringComparison.OrdinalIgnoreCase))
+        {
+            return null;
+        }
+
         if (!string.Equals(_customTitleIconSourcePath, path, StringComparison.OrdinalIgnoreCase))
         {
             _customTitleIconSourcePath = path;
-            _customTitleIconSource = WidgetTitleIconImageSourceFactory.TryCreate(path);
+            _customTitleIconSource = WidgetTitleIconImageSourceFactory.TryCreate(
+                path,
+                loadFailed: () =>
+                {
+                    _customTitleIconLoadFailedPath = path;
+                    _customTitleIconSourcePath = null;
+                    _customTitleIconSource = null;
+                    ApplyCustomTitleIconAndGroupIdentity();
+                });
         }
 
         return _customTitleIconSource;
     }
 
-    private ImageSource? ResolveCustomBackgroundSource(string? path)
+    private ImageSource? ResolveCustomBackgroundSource(string? path, bool shared)
     {
+        if (string.Equals(_customBackgroundLoadFailedPath, path, StringComparison.OrdinalIgnoreCase))
+        {
+            return null;
+        }
+
         if (!string.Equals(_customBackgroundSourcePath, path, StringComparison.OrdinalIgnoreCase))
         {
             _customBackgroundSourcePath = path;
-            _customBackgroundSource = WidgetBackgroundImageSourceFactory.TryCreate(path);
+            _customBackgroundSource = shared
+                ? WidgetSharedImageSourceCache.TryGet(
+                    path,
+                    WidgetBackgroundImageSourceFactory.CreateSource,
+                    loadFailed: () => OnCustomBackgroundLoadFailed(path))
+                : WidgetBackgroundImageSourceFactory.TryCreate(
+                    path,
+                    loadFailed: () => OnCustomBackgroundLoadFailed(path));
         }
 
         return _customBackgroundSource;
+    }
+
+    private void OnCustomBackgroundLoadFailed(string? path)
+    {
+        // One retry per content change: pin the failed path so the
+        // re-apply degrades to the color/material floor instead of
+        // looping, and the next commit's invalidation clears the pin so
+        // a re-pick gets a fresh attempt.
+        _customBackgroundLoadFailedPath = path;
+        _customBackgroundSourcePath = null;
+        _customBackgroundSource = null;
+        ApplyCustomWidgetBackground();
     }
 
     private ImageSource? ResolveCustomPanoramaSource(string? path)
@@ -231,29 +271,51 @@ public abstract partial class WidgetWindowBase
             return null;
         }
 
-        if (!string.Equals(_customPanoramaSourcePath, path, StringComparison.OrdinalIgnoreCase))
-        {
-            // One shared decode for every widget: all windows reference the
-            // same panorama URI, so the XAML image cache holds one surface.
-            int canvasWidth = Win32Helper.GetSystemMetrics(Win32Helper.SM_CXVIRTUALSCREEN);
-            int decodeWidth = Math.Clamp(
-                canvasWidth > 0 ? canvasWidth : 1920,
-                720,
-                2560);
-            var bitmap = new BitmapImage
+        // One shared decode for every widget: the process-wide cache
+        // hands the same surface to every window, sized to the virtual
+        // desktop canvas. The settle callbacks (not an ImageOpened
+        // subscription on the shared instance) keep each window's slice
+        // positioning and degradation private — no window pins the
+        // cached source's events.
+        ImageSource? source = WidgetSharedImageSourceCache.TryGet(
+            path,
+            CreatePanoramaSource,
+            loadFailed: () =>
             {
-                DecodePixelType = DecodePixelType.Physical,
-                DecodePixelWidth = decodeWidth
-            };
-            bitmap.UriSource = new Uri(path);
-            bitmap.ImageOpened += (_, _) =>
-                DispatcherQueue.TryEnqueue(UpdateCustomPanoramaViewport);
+                _customPanoramaSourcePath = null;
+                _customPanoramaSource = null;
+                ApplyCustomWidgetBackground();
+            },
+            loadSucceeded: () => DispatcherQueue.TryEnqueue(UpdateCustomPanoramaViewport));
+        if (ReferenceEquals(_customPanoramaSource, source))
+        {
+            return _customPanoramaSource;
+        }
 
-            _customPanoramaSourcePath = path;
-            _customPanoramaSource = bitmap;
+        _customPanoramaSourcePath = source is null ? null : path;
+        _customPanoramaSource = source;
+        if (source is BitmapImage { PixelWidth: > 0 })
+        {
+            // Cache hit on an already-decoded surface: position now. A
+            // pending decode positions through the success callback.
+            UpdateCustomPanoramaViewport();
         }
 
         return _customPanoramaSource;
+    }
+
+    private static ImageSource? CreatePanoramaSource(string path)
+    {
+        int canvasWidth = Win32Helper.GetSystemMetrics(Win32Helper.SM_CXVIRTUALSCREEN);
+        int decodeWidth = Math.Clamp(
+            canvasWidth > 0 ? canvasWidth : 1920,
+            720,
+            2560);
+        return new BitmapImage
+        {
+            DecodePixelType = DecodePixelType.Physical,
+            DecodePixelWidth = decodeWidth
+        };
     }
 
     /// <summary>

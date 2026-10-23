@@ -20,6 +20,8 @@ public sealed partial class FileSurfaceContent
         PointerRoutedEventArgs e)
     {
         if (_isDisposed ||
+            _itemRenameTarget is not null ||
+            IsStackPopoverItemRenameEditing ||
             !Win32Helper.IsKeyPressed(VirtualKey.Control) ||
             sender is not ListViewBase itemsView)
         {

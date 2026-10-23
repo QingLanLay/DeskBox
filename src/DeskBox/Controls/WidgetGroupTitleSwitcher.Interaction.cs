@@ -15,7 +15,7 @@ namespace DeskBox.Controls;
 public sealed partial class WidgetGroupTitleSwitcher
 {
     private DateTimeOffset _pointerEnteredAt;
-    private string? _pendingWheelTargetId;
+    private readonly WidgetGroupWheelSwitchCursor _wheelCursor = new();
     private double _wheelAccumulator;
     private DateTimeOffset _lastObservedWheelInputAt;
     private int _wheelGestureDirection;
@@ -248,6 +248,24 @@ public sealed partial class WidgetGroupTitleSwitcher
         _lastObservedWheelInputAt = default;
         _wheelGestureDirection = 0;
         _wheelGestureCommitted = false;
+    }
+
+    /// <summary>
+    /// The hosting group surface was interrupted (stowed to tray, member
+    /// removed, group dissolved). Hiding the window under the pointer raises
+    /// no PointerExited, so every optimistic hover/wheel gesture state that
+    /// would otherwise survive the interruption is dropped here (feedback
+    /// 387: a surviving cursor replayed as one extra page flip after the
+    /// next reveal).
+    /// </summary>
+    internal void NotifyInteractionInterrupted()
+    {
+        _wheelCursor.NotifyInterrupted();
+        ResetWheelGesture();
+        CancelWheelFeedback();
+        _isPointerOverSelector = false;
+        _isSelectorPressed = false;
+        _pointerEnteredAt = default;
     }
 
     private void AnimateWheelDirectionFeedback(bool scrollsUp)
@@ -580,11 +598,11 @@ public sealed partial class WidgetGroupTitleSwitcher
             _presentation.Members,
             _presentation.ActiveMemberId);
         if (origin == WidgetGroupSwitchOrigin.Wheel &&
-            !string.IsNullOrWhiteSpace(_pendingWheelTargetId))
+            !string.IsNullOrWhiteSpace(_wheelCursor.PendingTargetId))
         {
             int pendingIndex = FindMemberIndex(
                 _presentation.Members,
-                _pendingWheelTargetId);
+                _wheelCursor.PendingTargetId);
             if (pendingIndex >= 0)
             {
                 activeIndex = pendingIndex;
@@ -612,11 +630,11 @@ public sealed partial class WidgetGroupTitleSwitcher
             // persistence and the content transition. Keep the optimistic
             // target until the manager commits or rejects it so slow members
             // cannot repeatedly restart the same request.
-            _pendingWheelTargetId = targetId;
+            _wheelCursor.SetPending(targetId);
         }
         else
         {
-            _pendingWheelTargetId = null;
+            _wheelCursor.Clear();
         }
 
         MemberInvoked?.Invoke(
@@ -637,47 +655,33 @@ public sealed partial class WidgetGroupTitleSwitcher
             CompleteTabInvocation(widgetId, succeeded, version);
         }
 
-        if (!string.Equals(
-                _pendingWheelTargetId,
+        if (!_wheelCursor.ShouldReleaseOnCompletion(
                 widgetId,
-                StringComparison.Ordinal))
+                succeeded,
+                _presentation?.ActiveMemberId))
         {
             return;
         }
 
-        if (succeeded &&
-            !string.Equals(
-                _presentation?.ActiveMemberId,
-                widgetId,
-                StringComparison.Ordinal))
-        {
-            // A coalesced duplicate reports success while the original
-            // request is still preparing. Keep its optimistic cursor until
-            // the committed presentation catches up.
-            return;
-        }
-
-        _pendingWheelTargetId = null;
+        _wheelCursor.Clear();
         _wheelAccumulator = 0;
     }
 
     private void ReconcilePendingWheelTarget(
         WidgetGroupPresentation? presentation)
     {
-        if (presentation is null ||
-            string.IsNullOrWhiteSpace(_pendingWheelTargetId))
+        if (presentation is null)
         {
-            _pendingWheelTargetId = null;
+            _wheelCursor.Clear();
             return;
         }
 
-        if (string.Equals(
-                presentation.ActiveMemberId,
-                _pendingWheelTargetId,
-                StringComparison.Ordinal))
-        {
-            _pendingWheelTargetId = null;
-        }
+        // Discard the cursor when the committed presentation already shows
+        // it, or when it predates the latest interruption (stow): a reveal
+        // must never replay a pre-stow cursor as an extra wheel step. A
+        // non-matching post-interruption cursor is kept for the in-flight
+        // switch.
+        _wheelCursor.Reconcile(presentation.ActiveMemberId);
     }
 
     private void AnimateIdentityTransition(
@@ -708,10 +712,16 @@ public sealed partial class WidgetGroupTitleSwitcher
         bool directional =
             animationsEnabled &&
             origin is not WidgetGroupSwitchOrigin.Programmatic;
+        WidgetGroupSwitchAnimationEffect effect =
+            WidgetGroupSwitchAnimationPolicy.ResolveEffect(
+                App.Current?.SettingsService?.Settings.WidgetLayout
+                    .WidgetGroupSwitchAnimationStyle,
+                NavigationStyle);
         WidgetContentTransitionProfile profile =
             WidgetContentTransitionProfile.Create(
                 animationsEnabled,
-                directional);
+                directional,
+                effect);
         if (profile.DurationMilliseconds <= 0)
         {
             IdentityViewport.Width = _pendingIdentityWidth;
@@ -733,15 +743,22 @@ public sealed partial class WidgetGroupTitleSwitcher
         double sign = forward ? 1 : -1;
         double distance = profile.TranslationDistance;
         double railDistance = Math.Min(4, distance);
+        bool horizontalMotion =
+            effect == WidgetGroupSwitchAnimationEffect.Horizontal;
+        string motionProperty = horizontalMotion
+            ? nameof(TranslateTransform.X)
+            : nameof(TranslateTransform.Y);
         var outgoingTransform = new TranslateTransform();
         var incomingTransform = new TranslateTransform
         {
-            Y = directional ? distance * sign : 0
+            X = horizontalMotion ? distance * sign : 0,
+            Y = horizontalMotion ? 0 : distance * sign
         };
         var outgoingRailTransform = new TranslateTransform();
         var incomingRailTransform = new TranslateTransform
         {
-            Y = directional ? railDistance * sign : 0
+            X = horizontalMotion ? railDistance * sign : 0,
+            Y = horizontalMotion ? 0 : railDistance * sign
         };
         OutgoingIdentityLayer.RenderTransform = outgoingTransform;
         CurrentIdentityLayer.RenderTransform = incomingTransform;
@@ -778,19 +795,6 @@ public sealed partial class WidgetGroupTitleSwitcher
         var storyboard = new Storyboard();
         storyboard.Children.Add(outgoingFade);
         storyboard.Children.Add(incomingFade);
-
-        var iconScaleX = CreateIncomingIconScaleAnimation();
-        var iconScaleY = CreateIncomingIconScaleAnimation();
-        Storyboard.SetTarget(iconScaleX, CurrentIconScaleTransform);
-        Storyboard.SetTargetProperty(
-            iconScaleX,
-            nameof(ScaleTransform.ScaleX));
-        Storyboard.SetTarget(iconScaleY, CurrentIconScaleTransform);
-        Storyboard.SetTargetProperty(
-            iconScaleY,
-            nameof(ScaleTransform.ScaleY));
-        storyboard.Children.Add(iconScaleX);
-        storyboard.Children.Add(iconScaleY);
 
         var outgoingRailFade = new DoubleAnimation
         {
@@ -844,7 +848,7 @@ public sealed partial class WidgetGroupTitleSwitcher
             widthAnimation,
             nameof(FrameworkElement.Width));
         storyboard.Children.Add(widthAnimation);
-        if (directional)
+        if (profile.UsesMotion)
         {
             var outgoingMotion = new DoubleAnimation
             {
@@ -857,7 +861,7 @@ public sealed partial class WidgetGroupTitleSwitcher
                 }
             };
             Storyboard.SetTarget(outgoingMotion, outgoingTransform);
-            Storyboard.SetTargetProperty(outgoingMotion, nameof(TranslateTransform.Y));
+            Storyboard.SetTargetProperty(outgoingMotion, motionProperty);
             storyboard.Children.Add(outgoingMotion);
 
             var incomingMotion = new DoubleAnimation
@@ -872,7 +876,7 @@ public sealed partial class WidgetGroupTitleSwitcher
                 }
             };
             Storyboard.SetTarget(incomingMotion, incomingTransform);
-            Storyboard.SetTargetProperty(incomingMotion, nameof(TranslateTransform.Y));
+            Storyboard.SetTargetProperty(incomingMotion, motionProperty);
             storyboard.Children.Add(incomingMotion);
 
             var outgoingRailMotion = new DoubleAnimation
@@ -890,7 +894,7 @@ public sealed partial class WidgetGroupTitleSwitcher
                 outgoingRailTransform);
             Storyboard.SetTargetProperty(
                 outgoingRailMotion,
-                nameof(TranslateTransform.Y));
+                motionProperty);
             storyboard.Children.Add(outgoingRailMotion);
 
             var incomingRailMotion = new DoubleAnimation
@@ -909,45 +913,12 @@ public sealed partial class WidgetGroupTitleSwitcher
                 incomingRailTransform);
             Storyboard.SetTargetProperty(
                 incomingRailMotion,
-                nameof(TranslateTransform.Y));
+                motionProperty);
             storyboard.Children.Add(incomingRailMotion);
         }
         storyboard.Completed += IdentityStoryboard_Completed;
         _identityStoryboard = storyboard;
         storyboard.Begin();
-
-        DoubleAnimationUsingKeyFrames CreateIncomingIconScaleAnimation()
-        {
-            var animation = new DoubleAnimationUsingKeyFrames();
-            animation.KeyFrames.Add(new DiscreteDoubleKeyFrame
-            {
-                KeyTime = KeyTime.FromTimeSpan(
-                    TimeSpan.FromMilliseconds(incomingBeginTimeMs)),
-                Value = 0.9
-            });
-            animation.KeyFrames.Add(new EasingDoubleKeyFrame
-            {
-                KeyTime = KeyTime.FromTimeSpan(TimeSpan.FromMilliseconds(
-                    incomingBeginTimeMs + (incomingDurationMs * 0.62))),
-                Value = 1.055,
-                EasingFunction = new CubicEase
-                {
-                    EasingMode = EasingMode.EaseOut
-                }
-            });
-            animation.KeyFrames.Add(new EasingDoubleKeyFrame
-            {
-                KeyTime = KeyTime.FromTimeSpan(TimeSpan.FromMilliseconds(
-                    incomingBeginTimeMs + incomingDurationMs)),
-                Value = 1,
-                EasingFunction = new BackEase
-                {
-                    Amplitude = 0.18,
-                    EasingMode = EasingMode.EaseOut
-                }
-            });
-            return animation;
-        }
     }
 
     private void UpdateInteractionChrome(bool animate = true)
@@ -1028,8 +999,6 @@ public sealed partial class WidgetGroupTitleSwitcher
         CurrentPositionRailLayer.Opacity = 1;
         OutgoingPositionRailLayer.RenderTransform = null;
         CurrentPositionRailLayer.RenderTransform = null;
-        CurrentIconScaleTransform.ScaleX = 1;
-        CurrentIconScaleTransform.ScaleY = 1;
         IdentityViewport.Width = _pendingIdentityWidth;
         SetIdentity(
             OutgoingIcon,
@@ -1057,8 +1026,6 @@ public sealed partial class WidgetGroupTitleSwitcher
         CurrentPositionRailLayer.Opacity = 1;
         OutgoingPositionRailLayer.RenderTransform = null;
         CurrentPositionRailLayer.RenderTransform = null;
-        CurrentIconScaleTransform.ScaleX = 1;
-        CurrentIconScaleTransform.ScaleY = 1;
         SetPositionRail(OutgoingPositionRailLayer, null);
     }
 

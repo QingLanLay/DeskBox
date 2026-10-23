@@ -1,6 +1,7 @@
 using System.Globalization;
 using System.Reflection;
 using System.Runtime.InteropServices;
+using DeskBox.Core.Persistence;
 using DeskBox.Helpers;
 using DeskBox.Models;
 using DeskBox.Platform;
@@ -31,9 +32,26 @@ public partial class App
                 SettingsService.Settings.SearchHotkeyKey);
         ShortcutNativeDiagnosticState shortcutNative =
             ShortcutNativeBackend.CaptureDiagnosticState();
+        var startupLedger = new DeskBoxStartupLedgerDiagnostic(
+            StormGuardActive: _startupStormAssessment?.SuppressFileMutatingStartup == true,
+            AssessmentReason: _startupStormAssessment?.Reason,
+            PreviousLaunchStartedAtUtc: _startupStormAssessment?.PreviousLaunchStartedAtUtc);
+        var callbackRadarCounts = Platform.CallbackDepth.SnapshotWindowOperationCounts();
+        var callbackRadar = new DeskBoxCallbackRadarDiagnostic(
+            callbackRadarCounts.Values.Sum(),
+            callbackRadarCounts,
+            Platform.UiDispatch.PostAfterCallbackDroppedCount);
+        RecoveryOfferMarker? recoveryOfferMarker = RecoveryOfferStore.TryRead();
+        var recoveryOffer = new DeskBoxRecoveryOfferDiagnostic(
+            recoveryOfferMarker is not null,
+            recoveryOfferMarker?.DetectedAtUtc.ToUniversalTime(),
+            recoveryOfferMarker?.SnapshotCreatedAtUtc.ToUniversalTime(),
+            recoveryOfferMarker?.SnapshotAppVersion,
+            recoveryOfferMarker?.SnapshotWidgetCount ?? 0,
+            _lastRecoveryOfferOutcome.ToString());
 
         return new DeskBoxDiagnosticSnapshot(
-            SchemaVersion: 6,
+            SchemaVersion: 9,
             GeneratedAtUtc: DateTimeOffset.UtcNow,
             AppVersion: GetDiagnosticVersion(),
             DistributionChannel: DistributionService.ChannelName,
@@ -65,6 +83,7 @@ public partial class App
                 SettingsService.HasPendingSave,
                 saveFailure?.Operation,
                 saveFailure?.OccurredAt.ToUniversalTime()),
+            RecoveryOffer: recoveryOffer,
             ShortcutNative: new DeskBoxShortcutNativeDiagnostic(
                 shortcutNative.SelectedBackend,
                 shortcutNative.ModuleName,
@@ -78,7 +97,9 @@ public partial class App
             RuntimeHealth: runtimeHealth,
             WidgetManager: widgetManager,
             Displays: displays,
-            StorageMigration: WidgetManager?.StorageMigrationDiagnostic);
+            StorageMigration: WidgetManager?.StorageMigrationDiagnostic,
+            StartupLedger: startupLedger,
+            CallbackRadar: callbackRadar);
     }
 
     private static IReadOnlyList<DeskBoxDisplayDiagnostic> GetDisplayDiagnostics()

@@ -41,11 +41,13 @@ public partial class SettingsViewModel
     /// </summary>
     public AppUpdateManifest? LatestUpdateManifest => _availableUpdateManifest ?? _latestUpdateManifest;
     public bool CanViewReleaseNotes => LatestUpdateManifest?.HasReleaseNotesOrUrl == true;
-    public Visibility ReleaseNotesButtonVisibility =>
-        CanViewReleaseNotes ? Visibility.Visible : Visibility.Collapsed;
     public string ViewReleaseNotesButtonText => _localizationService.T("Settings.Update.ViewReleaseNotes");
     public string ManualUpdateDownloadUrl => GetManualUpdateDownloadUrl(_availableUpdateManifest);
-    public Visibility UpdateAutoCheckVisibility => Visibility.Visible;
+    // Store builds deliver updates through the Store itself; the auto-check
+    // toggle has no effect there (the background check short-circuits), so the
+    // card folds the same way the install-button card does.
+    public Visibility UpdateAutoCheckVisibility =>
+        IsDirectInstallerUpdateDelivery ? Visibility.Visible : Visibility.Collapsed;
     public Visibility UpdateProgressVisibility => IsDownloadingUpdate ? Visibility.Visible : Visibility.Collapsed;
     public Visibility UpdateProgressTextVisibility => IsDownloadingUpdate ? Visibility.Visible : Visibility.Collapsed;
     public Visibility UpdateReleaseNotesVisibility =>
@@ -80,7 +82,22 @@ public partial class SettingsViewModel
 
     // One-click update properties
     public string UpdateSummaryText =>
-        GetUpdateSummaryPreview(_availableUpdateManifest?.GetLocalizedSummary(_localizationService.CurrentCultureName));
+        GetUpdateSummaryPreview(GetLocalizedUpdateSummary());
+
+    private string GetLocalizedUpdateSummary()
+    {
+        if (_availableUpdateManifest is null)
+            return string.Empty;
+
+        // Server-published manifests keep authoritative per-locale summaries;
+        // locally built GitHub/Store manifests synthesize from string resources.
+        string summary = _availableUpdateManifest.GetLocalizedSummary(_localizationService.CurrentCultureName);
+        return string.IsNullOrWhiteSpace(summary)
+            ? _availableUpdateManifest.Channel == "store"
+                ? _localizationService.T("Settings.Update.Summary.Store")
+                : _localizationService.Format("Settings.Update.Summary.GitHub", _availableUpdateManifest.Version)
+            : summary;
+    }
     public Visibility UpdateSummaryVisibility =>
         _availableUpdateManifest is not null &&
         !IsDownloadingUpdate &&
@@ -187,6 +204,43 @@ public partial class SettingsViewModel
         }
     }
 
+    /// <summary>
+    /// Raw manifest fetch for the release-notes window. Deliberately skips
+    /// every update-UI state mutation <see cref="CheckForUpdatesAsync"/>
+    /// performs: the notes button is always visible now, and when no check
+    /// has produced a manifest yet the dialog resolves its own lazily.
+    /// An in-flight interactive check is awaited and reused rather than
+    /// racing a second network round-trip.
+    /// </summary>
+    public async Task<AppUpdateManifest?> FetchLatestManifestForReleaseNotesAsync(CancellationToken cancellationToken = default)
+    {
+        for (int i = 0; IsCheckingForUpdates && i < 80; i++)
+        {
+            await Task.Delay(250, cancellationToken);
+        }
+
+        if (LatestUpdateManifest is not null)
+        {
+            return LatestUpdateManifest;
+        }
+
+        try
+        {
+            var result = await _appUpdateService.CheckForUpdatesAsync(AppVersion, cancellationToken);
+            return result.Manifest is not null && AppUpdateService.IsManifestUsable(result.Manifest)
+                ? result.Manifest
+                : null;
+        }
+        catch (OperationCanceledException)
+        {
+            return null;
+        }
+        catch (Exception)
+        {
+            return null;
+        }
+    }
+
     public async Task<AppUpdateDownloadResult?> DownloadAvailableUpdateAsync()
     {
         if (_availableUpdateManifest is null || IsCheckingForUpdates || IsDownloadingUpdate)
@@ -260,7 +314,9 @@ public partial class SettingsViewModel
             return AppUpdateInstallResult.Failed(_localizationService.T("Settings.Update.Detail.DownloadMissing"));
         }
 
-        var result = _appUpdateService.StartInstallerHelper(_downloadedUpdateInstallerPath);
+        var result = _appUpdateService.StartInstallerHelper(
+            _downloadedUpdateInstallerPath,
+            appCultureName: _localizationService.CurrentCultureName);
         if (result.Success)
         {
             UpdateStatusText = _localizationService.T("Settings.Update.Status.Installing");
@@ -460,7 +516,6 @@ public partial class SettingsViewModel
         OnPropertyChanged(nameof(AvailableUpdateReleaseNotesUrl));
         OnPropertyChanged(nameof(LatestUpdateManifest));
         OnPropertyChanged(nameof(CanViewReleaseNotes));
-        OnPropertyChanged(nameof(ReleaseNotesButtonVisibility));
         OnPropertyChanged(nameof(ViewReleaseNotesButtonText));
         OnPropertyChanged(nameof(ManualUpdateDownloadUrl));
         OnPropertyChanged(nameof(CanOpenManualUpdateDownload));

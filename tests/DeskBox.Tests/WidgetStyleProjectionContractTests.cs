@@ -83,8 +83,12 @@ public sealed class WidgetStyleProjectionContractTests
         "needsInitialPlacement", "positionAnchor",
         "positionMarginX", "positionMarginY",
         "positionMonitorKey", "positionMonitorDeviceName",
-        "positionMonitorWasPrimary", "boundsCoordinateVersion",
+        "positionMonitorStableId", "positionMonitorWasPrimary",
+        "boundsCoordinateVersion",
+        "screenBindingMode", "boundScreenId", "boundScreenLabel",
+        "disconnectCollapsedForScreenId",
         "compactPlacement",
+        "lastUserPlacementUtc",
         // file bindings + item payloads
         "mappedFolderPath", "followsDefaultStoragePath", "managedFolderName",
         "items", "fileAddedAtByPath", "fileAddedAtTrackingInitialized",

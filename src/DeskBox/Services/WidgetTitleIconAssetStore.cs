@@ -198,10 +198,46 @@ public sealed class WidgetTitleIconAssetStore
             }
         }
 
-        using FileStream source = sourceInfo.OpenRead();
-        using FileStream target = File.Create(targetPath);
-        await source.CopyToAsync(target);
-        return WidgetTitleIconAssetResult.Copied;
+        // Atomic replace: the scheduled backup snapshots data/ while the
+        // app runs, and an in-flight streamed decode can hold the current
+        // file open — write a sibling temp file (the backup filter skips
+        // .tmp suffixes) and swap it in, so a snapshot never captures a
+        // truncated image and a concurrent reader never sees a half
+        // written one. The swap retries once for a decode handle released
+        // mid-swap.
+        string tempPath = targetPath + ".tmp";
+        try
+        {
+            using (FileStream target = File.Create(tempPath))
+            {
+                using FileStream source = sourceInfo.OpenRead();
+                await source.CopyToAsync(target);
+            }
+
+            for (int attempt = 0; ; attempt++)
+            {
+                try
+                {
+                    File.Move(tempPath, targetPath, overwrite: true);
+                    return WidgetTitleIconAssetResult.Copied;
+                }
+                catch (IOException) when (attempt == 0)
+                {
+                    await Task.Delay(50);
+                }
+            }
+        }
+        finally
+        {
+            try
+            {
+                File.Delete(tempPath);
+            }
+            catch (Exception ex)
+            {
+                App.Log($"[TitleIconAsset] Failed to clean temp copy: {ex.Message}");
+            }
+        }
     }
 
     public void DeleteImage(string widgetId, string? fileName)

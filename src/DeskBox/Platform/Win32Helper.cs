@@ -20,6 +20,36 @@ namespace DeskBox.Platform;
 /// </remarks>
 public static partial class Win32Helper
 {
+    // ── shell: fullscreen-app detection (display topology gate, spec 5.6) ──
+
+    public const int QueryUserNotificationStateBusy = 2;
+    public const int QueryUserNotificationStateRunningD3dFullScreen = 3;
+    public const int QueryUserNotificationStatePresentationMode = 4;
+
+    [DllImport("shell32.dll", SetLastError = false)]
+    private static extern int SHQueryUserNotificationState(out int state);
+
+    /// <summary>
+    /// True while a fullscreen-exclusive app (game) or presentation mode owns
+    /// the screen. Used to park topology restores (resolution flips from
+    /// fullscreen games must not reshuffle widgets, spec S13).
+    /// </summary>
+    public static bool IsFullscreenAppActive()
+    {
+        try
+        {
+            return SHQueryUserNotificationState(out int state) == 0 &&
+                   state is QueryUserNotificationStateBusy or
+                       QueryUserNotificationStateRunningD3dFullScreen or
+                       QueryUserNotificationStatePresentationMode;
+        }
+        catch (Exception ex) when (
+            ex is DllNotFoundException or EntryPointNotFoundException)
+        {
+            return false;
+        }
+    }
+
     private const uint FileShareRead = 0x00000001;
     private const uint FileShareWrite = 0x00000002;
     private const uint FileShareDelete = 0x00000004;
@@ -202,9 +232,9 @@ public static partial class Win32Helper
     public const int SW_SHOWNORMAL = 1;
     public const int SW_SHOWNOACTIVATE = 4;
 
-    [LibraryImport("user32.dll", SetLastError = true)]
+    [LibraryImport("user32.dll", EntryPoint = "SetWindowPos", SetLastError = true)]
     [return: MarshalAs(UnmanagedType.Bool)]
-    public static partial bool SetWindowPos(
+    private static partial bool SetWindowPosNative(
         IntPtr hWnd,
         IntPtr hWndInsertAfter,
         int X,
@@ -212,6 +242,29 @@ public static partial class Win32Helper
         int cx,
         int cy,
         uint uFlags);
+
+    /// <summary>
+    /// Tracked wrapper for the window-position P/Invoke: reports itself to the
+    /// callback-depth radar when called from inside a native callback frame
+    /// (subclass procs, OLE drop callbacks, tray commands). All SetWindowPos
+    /// traffic in the app must go through here so the radar sees all of it.
+    /// </summary>
+    public static bool SetWindowPos(
+        IntPtr hWnd,
+        IntPtr hWndInsertAfter,
+        int X,
+        int Y,
+        int cx,
+        int cy,
+        uint uFlags)
+    {
+        if (CallbackDepth.Depth > 0)
+        {
+            CallbackDepth.RecordWindowOperation();
+        }
+
+        return SetWindowPosNative(hWnd, hWndInsertAfter, X, Y, cx, cy, uFlags);
+    }
 
     // ── DeferWindowPos: atomic multi-window position batch ──────────
     // Moving N windows through one HDWP transaction commits all positions
@@ -232,13 +285,37 @@ public static partial class Win32Helper
         int cy,
         uint uFlags);
 
-    [LibraryImport("user32.dll", SetLastError = true)]
+    [LibraryImport("user32.dll", EntryPoint = "EndDeferWindowPos", SetLastError = true)]
     [return: MarshalAs(UnmanagedType.Bool)]
-    public static partial bool EndDeferWindowPos(IntPtr hWinPosInfo);
+    private static partial bool EndDeferWindowPosNative(IntPtr hWinPosInfo);
 
-    [LibraryImport("user32.dll", SetLastError = true)]
+    /// <summary>Tracked commit point for a DeferWindowPos batch; see
+    /// <see cref="SetWindowPos(IntPtr, IntPtr, int, int, int, int, uint)"/>.</summary>
+    public static bool EndDeferWindowPos(IntPtr hWinPosInfo)
+    {
+        if (CallbackDepth.Depth > 0)
+        {
+            CallbackDepth.RecordWindowOperation();
+        }
+
+        return EndDeferWindowPosNative(hWinPosInfo);
+    }
+
+    [LibraryImport("user32.dll", EntryPoint = "ShowWindow", SetLastError = true)]
     [return: MarshalAs(UnmanagedType.Bool)]
-    public static partial bool ShowWindow(IntPtr hWnd, int nCmdShow);
+    private static partial bool ShowWindowNative(IntPtr hWnd, int nCmdShow);
+
+    /// <summary>Tracked wrapper; see
+    /// <see cref="SetWindowPos(IntPtr, IntPtr, int, int, int, int, uint)"/>.</summary>
+    public static bool ShowWindow(IntPtr hWnd, int nCmdShow)
+    {
+        if (CallbackDepth.Depth > 0)
+        {
+            CallbackDepth.RecordWindowOperation();
+        }
+
+        return ShowWindowNative(hWnd, nCmdShow);
+    }
 
     public delegate bool EnumWindowsProc(IntPtr hWnd, IntPtr lParam);
 
@@ -285,9 +362,21 @@ public static partial class Win32Helper
     [return: MarshalAs(UnmanagedType.Bool)]
     public static partial bool AllowSetForegroundWindow(uint processId);
 
-    [LibraryImport("user32.dll")]
+    [LibraryImport("user32.dll", EntryPoint = "SetForegroundWindow")]
     [return: MarshalAs(UnmanagedType.Bool)]
-    public static partial bool SetForegroundWindow(IntPtr hWnd);
+    private static partial bool SetForegroundWindowNative(IntPtr hWnd);
+
+    /// <summary>Tracked wrapper; see
+    /// <see cref="SetWindowPos(IntPtr, IntPtr, int, int, int, int, uint)"/>.</summary>
+    public static bool SetForegroundWindow(IntPtr hWnd)
+    {
+        if (CallbackDepth.Depth > 0)
+        {
+            CallbackDepth.RecordWindowOperation();
+        }
+
+        return SetForegroundWindowNative(hWnd);
+    }
 
     [LibraryImport("user32.dll")]
     public static partial IntPtr WindowFromPoint(POINT point);
@@ -301,6 +390,21 @@ public static partial class Win32Helper
     [LibraryImport("user32.dll")]
     [return: MarshalAs(UnmanagedType.Bool)]
     public static partial bool IsWindow(IntPtr hWnd);
+
+    /// <summary>True when the window still exists AND belongs to this
+    /// process — the landing guard for deferred window work. A bare
+    /// IsWindow check accepts a recycled HWND that now belongs to another
+    /// process; a stale deferred unit must never operate on that.</summary>
+    public static bool IsWindowInCurrentProcess(IntPtr hWnd)
+    {
+        if (!IsWindow(hWnd))
+        {
+            return false;
+        }
+
+        GetWindowThreadProcessId(hWnd, out uint processId);
+        return processId == (uint)Environment.ProcessId;
+    }
 
     [LibraryImport("user32.dll", EntryPoint = "FindWindowExW", SetLastError = true, StringMarshalling = StringMarshalling.Utf16)]
     public static partial IntPtr FindWindowEx(IntPtr hWndParent, IntPtr hWndChildAfter, string? lpszClass, string? lpszWindow);
@@ -384,7 +488,20 @@ public static partial class Win32Helper
     public static partial IntPtr GetWindowLongPtr(IntPtr hWnd, int nIndex);
 
     [LibraryImport("user32.dll", EntryPoint = "SetWindowLongPtrW", SetLastError = true)]
-    public static partial IntPtr SetWindowLongPtr(IntPtr hWnd, int nIndex, IntPtr dwNewLong);
+    private static partial IntPtr SetWindowLongPtrNative(IntPtr hWnd, int nIndex, IntPtr dwNewLong);
+
+    /// <summary>Tracked wrapper (owner/ex-style rewrites are window
+    /// surgery); see
+    /// <see cref="SetWindowPos(IntPtr, IntPtr, int, int, int, int, uint)"/>.</summary>
+    public static IntPtr SetWindowLongPtr(IntPtr hWnd, int nIndex, IntPtr dwNewLong)
+    {
+        if (CallbackDepth.Depth > 0)
+        {
+            CallbackDepth.RecordWindowOperation();
+        }
+
+        return SetWindowLongPtrNative(hWnd, nIndex, dwNewLong);
+    }
 
     [LibraryImport("kernel32.dll")]
     public static partial void SetLastError(uint dwErrCode);
@@ -864,6 +981,7 @@ public static partial class Win32Helper
     public const int SM_YVIRTUALSCREEN = 77;
     public const int SM_CXVIRTUALSCREEN = 78;
     public const int SM_CYVIRTUALSCREEN = 79;
+    public const int SM_REMOTESESSION = 0x1000;
 
     [LibraryImport("user32.dll", SetLastError = true)]
     [return: MarshalAs(UnmanagedType.Bool)]
@@ -981,15 +1099,13 @@ public static partial class Win32Helper
     [return: MarshalAs(UnmanagedType.Bool)]
     public static partial bool UnregisterPowerSettingNotification(IntPtr handle);
 
-    // System-wide visual effects (HKCU-scoped per-user parameters).
+    // System-wide visual effects (HKCU-scoped per-user parameters). Read-only:
+    // writes go through the OS settings surfaces — under an MSIX package the
+    // copy-on-write HKCU virtualization would swallow SPIF_UPDATEINIFILE's
+    // profile write and silently revert after the next sign-in.
     private const uint SpiGetDropShadow = 0x1024;
-    private const uint SpiSetDropShadow = 0x1025;
-    private const uint SpifUpdateIniFile = 0x0001;
-    private const uint SpifSendChange = 0x0002;
 
-    // pvParam is polymorphic: GET actions want a pointer to the receiving
-    // buffer; simple BOOL SET actions want the new value passed BY VALUE in
-    // the pvParam slot — a marshalled pointer is always nonzero, i.e. TRUE.
+    // The GET actions pass a pointer to the receiving buffer in pvParam.
     [LibraryImport("user32.dll", SetLastError = true, EntryPoint = "SystemParametersInfoW")]
     [return: MarshalAs(UnmanagedType.Bool)]
     private static partial bool SystemParametersInfo(
@@ -1024,32 +1140,28 @@ public static partial class Win32Helper
     }
 
     /// <summary>
-    /// Writes the system-wide "show shadows under windows" effect the same way
-    /// the Performance Options dialog does: persist to the profile and broadcast
-    /// WM_SETTINGCHANGE. Affects every window with a non-client frame, not just
-    /// this app — callers must confirm with the user before invoking.
+    /// Reads Windows' "Transparency effects" personalization switch — the
+    /// setting Mica/Acrylic materials degrade without. The registry value is
+    /// the source of truth across every supported build; a missing value
+    /// means the OS default (on).
     /// </summary>
-    public static bool TrySetWindowDropShadowEnabled(bool enabled, out int errorCode)
+    public static bool TryGetSystemTransparencyEffectsEnabled(out bool enabled)
     {
-        errorCode = 0;
-        var value = (IntPtr)(enabled ? 1 : 0);
+        enabled = true;
         try
         {
-            if (SystemParametersInfo(
-                    SpiSetDropShadow,
-                    0,
-                    value,
-                    SpifUpdateIniFile | SpifSendChange))
+            using Microsoft.Win32.RegistryKey? personalize =
+                Microsoft.Win32.Registry.CurrentUser.OpenSubKey(
+                    @"Software\Microsoft\Windows\CurrentVersion\Themes\Personalize");
+            if (personalize?.GetValue("EnableTransparency") is int value)
             {
-                return true;
+                enabled = value != 0;
             }
 
-            errorCode = Marshal.GetLastWin32Error();
-            return false;
+            return true;
         }
-        catch (Exception ex)
+        catch
         {
-            errorCode = ex.HResult;
             return false;
         }
     }
@@ -1482,6 +1594,36 @@ public static partial class Win32Helper
         UIntPtr wParam,
         IntPtr lParam);
 
+    // ── OLE apartment marshaling for the deferred virtual-drop worker ──
+    // The native drop target hands its IDataObject to a dedicated MTA thread
+    // for virtual-file materialization; these are the official cross-thread
+    // marshaling primitives (see CoMarshalInterThreadInterfaceInStream docs).
+
+    public static readonly Guid IDataObjectComInterfaceId = new(
+        "0000010E-0000-0000-C000-000000000046");
+
+    [LibraryImport("ole32.dll")]
+    public static partial int CoMarshalInterThreadInterfaceInStream(
+        in Guid riid,
+        IntPtr punk,
+        out IntPtr ppStm);
+
+    [LibraryImport("ole32.dll")]
+    public static partial int CoGetInterfaceAndReleaseStream(
+        IntPtr pStm,
+        in Guid riid,
+        out IntPtr ppv);
+
+    public const uint CoinitMultithreaded = 0x0;
+
+    [LibraryImport("ole32.dll")]
+    public static partial int CoInitializeEx(
+        IntPtr pvReserved,
+        uint dwCoInit);
+
+    [LibraryImport("ole32.dll")]
+    public static partial void CoUninitialize();
+
     public delegate IntPtr SubclassProc(
         IntPtr hWnd,
         uint message,
@@ -1613,6 +1755,47 @@ public static partial class Win32Helper
     {
         SetWindowPos(hWnd, HWND_NOTOPMOST, 0, 0, 0, 0,
             WindowLayerPositionFlags);
+    }
+
+    /// <summary>
+    /// WinUI shows every FlyoutBase in per-show bridge windows of this class
+    /// (CommandBarFlyout's icon strip and row area each get one). They stay
+    /// in the normal z band even when their host window is TOPMOST.
+    /// </summary>
+    public const string PopupWindowSiteBridgeClassName =
+        "Microsoft.UI.Content.PopupWindowSiteBridge";
+
+    /// <summary>
+    /// The visible popup-bridge windows of this process. A host pinned to
+    /// the TOPMOST band (the stack popover) covers these bridges unless they
+    /// are promoted into the band for the flyout's lifetime.
+    /// </summary>
+    public static IReadOnlyList<IntPtr> GetVisiblePopupBridgeWindows()
+    {
+        var bridges = new List<IntPtr>();
+        EnumWindows((hWnd, _) =>
+        {
+            if (!IsWindowVisible(hWnd))
+            {
+                return true;
+            }
+
+            GetWindowThreadProcessId(hWnd, out uint processId);
+            if (processId != (uint)Environment.ProcessId)
+            {
+                return true;
+            }
+
+            var className = new StringBuilder(64);
+            if (GetClassName(hWnd, className, 64) > 0 &&
+                className.ToString() == PopupWindowSiteBridgeClassName)
+            {
+                bridges.Add(hWnd);
+            }
+
+            return true;
+        }, IntPtr.Zero);
+        return bridges;
     }
 
     public static bool IsWindowTopMost(IntPtr hWnd)
@@ -1772,8 +1955,9 @@ public static partial class Win32Helper
     /// </summary>
     public static int TrySetDwmWindowAttribute(IntPtr hwnd, int attr, ref int value)
     {
-        if ((attr is DWMWA_BORDER_COLOR or DWMWA_WINDOW_CORNER_PREFERENCE or DWMWA_SYSTEMBACKDROP_TYPE) &&
-            !Services.WindowsCompatibilityService.SupportsWin11DwmAttributes)
+        if (ShouldSkipDwmWindowAttribute(
+                attr,
+                Services.WindowsCompatibilityService.SupportsWin11DwmAttributes))
         {
             return 0;
         }
@@ -1787,6 +1971,19 @@ public static partial class Win32Helper
             return -1;
         }
     }
+
+    /// <summary>
+    /// The Win10 floor guard of <see cref="TrySetDwmWindowAttribute"/> as a
+    /// pure function: attributes 33/34/38 are Windows 11 additions and are
+    /// dropped (return 0, no P/Invoke) when the OS cannot render them. This
+    /// branch is the only thing keeping those attributes from reaching
+    /// DwmSetWindowAttribute on Windows 10.
+    /// </summary>
+    internal static bool ShouldSkipDwmWindowAttribute(
+        int attr,
+        bool supportsWin11DwmAttributes) =>
+        !supportsWin11DwmAttributes &&
+        attr is DWMWA_BORDER_COLOR or DWMWA_WINDOW_CORNER_PREFERENCE or DWMWA_SYSTEMBACKDROP_TYPE;
 
     public const int DWMWA_TRANSITIONS_FORCEDISABLED = 3;
     public const int DWMWA_CLOAK = 13;
@@ -1845,6 +2042,18 @@ public static partial class Win32Helper
         IntPtr hProcess,
         IntPtr dwMinWorkingSetSize,
         IntPtr dwMaxWorkingSetSize);
+
+    [DllImport("kernel32.dll", SetLastError = true)]
+    private static extern bool TerminateProcess(IntPtr hProcess, uint uExitCode);
+
+    /// <summary>
+    /// Kills this process without running exit handlers or waiting for any
+    /// runtime thread. Last-resort shutdown backstop only.
+    /// </summary>
+    public static void TerminateCurrentProcess(uint exitCode)
+    {
+        TerminateProcess(GetCurrentProcess(), exitCode);
+    }
 
     /// <summary>
     /// Pages the whole working set out (same effect as minimizing a window).
@@ -2062,6 +2271,81 @@ public static partial class Win32Helper
     [return: MarshalAs(UnmanagedType.Bool)]
     public static partial bool GetCursorPos(out POINT lpPoint);
 
+    [LibraryImport("user32.dll")]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    public static partial bool ClientToScreen(IntPtr hWnd, ref POINT lpPoint);
+
+    [LibraryImport("user32.dll")]
+    private static partial uint GetMessagePos();
+
+    // GetMessagePos packs signed screen coordinates for the input message
+    // currently being dispatched; both words must be sign-extended so windows
+    // left of / above the primary monitor resolve correctly. It reflects the
+    // pointer event itself, not the shared cursor, so touch drags work.
+    private static bool IsPointOnVirtualDesktop(POINT point)
+    {
+        int vx = GetSystemMetrics(SM_XVIRTUALSCREEN);
+        int vy = GetSystemMetrics(SM_YVIRTUALSCREEN);
+        int width = GetSystemMetrics(SM_CXVIRTUALSCREEN);
+        int height = GetSystemMetrics(SM_CYVIRTUALSCREEN);
+        return width > 0 && height > 0 &&
+            point.X >= vx && point.X <= vx + width &&
+            point.Y >= vy && point.Y <= vy + height;
+    }
+
+    /// <summary>
+    /// Resolves the screen-space point of the pointer event being dispatched,
+    /// from the thread message queue (GetMessagePos) instead of the shared
+    /// mouse cursor. Touch contact never moves the cursor, so GetCursorPos-
+    /// based drag and resize math silently no-ops on touch. GetMessagePos is
+    /// also independent of this window's bounds, unlike the client-origin +
+    /// XAML-position conversion, which feedback-loops when window moves are
+    /// paced behind pointer events during fast drags; that conversion stays
+    /// as a fallback only.
+    /// </summary>
+    public static bool TryGetPointerScreenPoint(
+        IntPtr hWnd,
+        Microsoft.UI.Xaml.UIElement? relativeTo,
+        Microsoft.UI.Xaml.Input.PointerRoutedEventArgs e,
+        out POINT screenPoint)
+    {
+        screenPoint = default;
+        uint messagePos = GetMessagePos();
+        if (messagePos != 0)
+        {
+            var candidate = new POINT
+            {
+                X = (short)(messagePos & 0xFFFF),
+                Y = (short)(messagePos >> 16),
+            };
+            if (IsPointOnVirtualDesktop(candidate))
+            {
+                screenPoint = candidate;
+                return true;
+            }
+        }
+
+        if (relativeTo?.XamlRoot is not { } xamlRoot)
+        {
+            return false;
+        }
+
+        Windows.Foundation.Point position = e.GetCurrentPoint(relativeTo).Position;
+        double scale = GetDpiScaleForWindow(hWnd, xamlRoot);
+        var clientOrigin = default(POINT);
+        if (!ClientToScreen(hWnd, ref clientOrigin))
+        {
+            return false;
+        }
+
+        screenPoint = new POINT
+        {
+            X = clientOrigin.X + (int)Math.Round(position.X * scale),
+            Y = clientOrigin.Y + (int)Math.Round(position.Y * scale),
+        };
+        return true;
+    }
+
     [StructLayout(LayoutKind.Sequential)]
     public struct RECT
     {
@@ -2128,7 +2412,8 @@ public static partial class Win32Helper
         RECT WorkArea,
         string DeviceName,
         bool IsPrimary,
-        double DpiScale);
+        double DpiScale,
+        string StableId);
 
     [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Unicode)]
     private struct DISPLAY_DEVICEW
@@ -2324,6 +2609,48 @@ public static partial class Win32Helper
     }
 
     /// <summary>
+    /// Full physical monitor rectangle of the display currently containing
+    /// the window. Per-monitor consumers (panorama background fitting) must
+    /// key off this rect rather than the virtual-desktop union — the union
+    /// mixes monitor DPI scales and only behaves like one canvas when every
+    /// monitor shares a single scale.
+    /// </summary>
+    public static bool TryGetWindowMonitorRect(IntPtr hWnd, out RECT monitorRect)
+    {
+        monitorRect = default;
+        if (hWnd == IntPtr.Zero)
+        {
+            return false;
+        }
+
+        try
+        {
+            IntPtr monitor = MonitorFromWindow(hWnd, MONITOR_DEFAULTTONEAREST);
+            if (monitor == IntPtr.Zero)
+            {
+                return false;
+            }
+
+            var info = new MONITORINFO
+            {
+                cbSize = Marshal.SizeOf<MONITORINFO>()
+            };
+            if (!GetMonitorInfo(monitor, ref info))
+            {
+                return false;
+            }
+
+            monitorRect = info.rcMonitor;
+            return true;
+        }
+        catch (Exception ex) when (
+            ex is DllNotFoundException or EntryPointNotFoundException or BadImageFormatException)
+        {
+            return false;
+        }
+    }
+
+    /// <summary>
     /// Returns the refresh rate of the monitor currently containing the window.
     /// Invalid driver values safely normalize to 60 Hz.
     /// </summary>
@@ -2410,12 +2737,14 @@ public static partial class Win32Helper
                 };
                 if (GetMonitorInfoEx(hMonitor, ref info))
                 {
+                    string deviceName = info.szDevice ?? string.Empty;
                     areas.Add(new MonitorWorkAreaInfo(
                         info.rcMonitor,
                         info.rcWork,
-                        info.szDevice ?? string.Empty,
+                        deviceName,
                         (info.dwFlags & MonitorInfoPrimary) == MonitorInfoPrimary,
-                        GetDpiScaleForMonitor(hMonitor)));
+                        GetDpiScaleForMonitor(hMonitor),
+                        ResolveStableMonitorId(deviceName)));
                 }
                 else
                 {
@@ -2430,7 +2759,8 @@ public static partial class Win32Helper
                             fallbackInfo.rcWork,
                             string.Empty,
                             (fallbackInfo.dwFlags & MonitorInfoPrimary) == MonitorInfoPrimary,
-                            GetDpiScaleForMonitor(hMonitor)));
+                            GetDpiScaleForMonitor(hMonitor),
+                            ResolveStableMonitorId(null)));
                     }
                 }
 
@@ -2441,6 +2771,64 @@ public static partial class Win32Helper
         return areas;
     }
 
+    /// <summary>EnumDisplayDevices dwFlags: retrieve the device interface name for the monitor.</summary>
+    private const uint EddGetDeviceInterfaceName = 0x00000001;
+
+    /// <summary>
+    /// Best-effort stable identity for a monitor: the PnP device interface id
+    /// when the adapter exposes one, otherwise the registry device key, and
+    /// finally the (unstable) <c>\\.\DISPLAYn</c> name. Unlike the device name,
+    /// the first two survive the renumbering Windows performs around lock,
+    /// sleep, and display-mode switches, so persisted monitor references key
+    /// on this value.
+    /// </summary>
+    public static string ResolveStableMonitorId(string? deviceName)
+    {
+        string fallback = string.IsNullOrWhiteSpace(deviceName) ? "unknown-display" : deviceName.Trim();
+        if (string.IsNullOrWhiteSpace(deviceName))
+        {
+            return fallback;
+        }
+
+        try
+        {
+            var displayDevice = new DisplayDevice
+            {
+                Size = Marshal.SizeOf<DisplayDevice>(),
+                DeviceName = string.Empty,
+                DeviceString = string.Empty,
+                DeviceId = string.Empty,
+                DeviceKey = string.Empty
+            };
+            if (EnumDisplayDevices(
+                    deviceName,
+                    0,
+                    ref displayDevice,
+                    EddGetDeviceInterfaceName))
+            {
+                if (!string.IsNullOrWhiteSpace(displayDevice.DeviceId))
+                {
+                    return displayDevice.DeviceId.Trim();
+                }
+
+                if (!string.IsNullOrWhiteSpace(displayDevice.DeviceKey))
+                {
+                    return displayDevice.DeviceKey.Trim();
+                }
+            }
+        }
+        catch (Exception ex) when (
+            ex is DllNotFoundException or
+                EntryPointNotFoundException or
+                BadImageFormatException or
+                MarshalDirectiveException or
+                TypeLoadException)
+        {
+        }
+
+        return fallback;
+    }
+
     /// <summary>
     /// Open a file or URL using the default associated application.
     /// </summary>
@@ -2448,8 +2836,10 @@ public static partial class Win32Helper
     /// First delegates to the running Explorer desktop process so launched applications
     /// inherit the current user shell environment rather than DeskBox's potentially stale
     /// startup environment. If Explorer is unavailable, falls back to ShellExecuteEx via
-    /// <see cref="Process.Start(ProcessStartInfo)"/>. <paramref name="ownerWindow"/> is
-    /// forwarded to the "Open With" fallback so any system dialog has a real parent.
+    /// <see cref="Process.Start(ProcessStartInfo)"/> with the Shell default verb — the
+    /// desktop double-click dispatch — instead of an explicit "open" verb (feedback 246).
+    /// <paramref name="ownerWindow"/> is forwarded to the "Open With" fallback so any
+    /// system dialog has a real parent.
     /// </remarks>
     public static bool OpenFileOrChooseApp(IntPtr ownerWindow, string path)
     {
@@ -2508,8 +2898,12 @@ public static partial class Win32Helper
         {
             FileName = path,
             UseShellExecute = true,
-            Verb = "open",
             WorkingDirectory = directory
+            // Deliberately no Verb (feedback 246): a NULL verb is the desktop
+            // double-click dispatch. An explicit "open" verb both forces
+            // default-verb classes (templates: feedback 366) open as regular
+            // documents and breaks when the OS-side "open" resolution alone
+            // is damaged — the same machine still double-clicks fine.
         };
 
         using IDisposable? electronRunAsNodeScope = SuppressElectronRunAsNodeForChildLaunch();
@@ -2554,11 +2948,15 @@ public static partial class Win32Helper
     /// <summary>
     /// Opens <paramref name="path"/> locally with the Shell's default verb — the
     /// dispatch a desktop double-click performs — instead of the explicit "open"
-    /// verb, and without delegating to the Explorer desktop process. Folder
-    /// shortcuts need this (#459): third-party file managers register as the
-    /// Folder default handler, and an explicit "open" verb never reaches that
-    /// registration. Shares the local-launch pipeline (environment scrub,
-    /// pending observation) with the fallback in
+    /// verb, and without delegating to the Explorer desktop process. Used for the
+    /// classes where an explicit "open" verb is wrong or fragile: folder
+    /// shortcuts (#459, third-party file managers register as the Folder default
+    /// handler), template documents (feedback 366, the default "New" verb creates
+    /// a copy instead of opening — and enabling an overwrite of — the template),
+    /// and shortcuts to local files (feedback 246, the default verb is exactly
+    /// what the desktop dispatches and local failures throw instead of dying
+    /// silently in Explorer's fire-and-forget). Shares the local-launch pipeline
+    /// (environment scrub, pending observation) with the fallback in
     /// <see cref="OpenFileOrChooseApp(IntPtr, string)"/>.
     /// </summary>
     internal static bool OpenWithDefaultVerbLocally(string path, string workingDirectory)

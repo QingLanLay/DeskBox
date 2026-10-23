@@ -58,10 +58,10 @@ public sealed class AotStage5B4C1B1ContractTests
 
         Assert.Contains("CreateItemFlyout", menu, StringComparison.Ordinal);
         Assert.Contains("CreateMultiSelectionFlyout", menu, StringComparison.Ordinal);
-        Assert.Equal(2, CountOccurrences(menu, "Widget.MoveToRecycleBin"));
-        Assert.Equal(
-            2,
-            CountOccurrences(menu, "await actions.DeleteItemsAsync(actions.GetSelectedItems())"));
+        // Delete moved to the shared primary-strip helper (one literal
+        // serving both flyouts) with the Windows 11 menu rework.
+        Assert.Equal(1, CountOccurrences(menu, "Widget.MoveToRecycleBin"));
+        Assert.Equal(1, CountOccurrences(menu, "actions.DeleteItemsAsync("));
         Assert.Contains("FileItemMenuBuilder.CreateItemFlyout", surface, StringComparison.Ordinal);
         Assert.Contains("FileItemMenuBuilder.CreateMultiSelectionFlyout", surface, StringComparison.Ordinal);
         Assert.Contains("items => DeleteItemsAsync(items)", surface, StringComparison.Ordinal);
@@ -83,8 +83,13 @@ public sealed class AotStage5B4C1B1ContractTests
         Assert.Contains("CreateItemFlyout(selectedItems[0])", probe, StringComparison.Ordinal);
         Assert.Contains("CreateMultiSelectionFlyout()", probe, StringComparison.Ordinal);
         Assert.Contains("Widget.MoveToRecycleBin", probe, StringComparison.Ordinal);
-        Assert.Contains("MenuFlyoutItemAutomationPeer", probe, StringComparison.Ordinal);
-        Assert.Contains("PatternInterface.Invoke", probe, StringComparison.Ordinal);
+        Assert.Contains("AotContextMenuProbe.InvokeProvider", probe, StringComparison.Ordinal);
+        Assert.Contains(
+            "PatternInterface.Invoke",
+            ReadRepositoryFile(
+                "src/DeskBox/Controls/WidgetContents/" +
+                "FileSurfaceContent.AotContextMenuProbe.cs"),
+            StringComparison.Ordinal);
         Assert.Contains("IInvokeProvider", probe, StringComparison.Ordinal);
         Assert.Contains("invokeProvider.Invoke()", probe, StringComparison.Ordinal);
         Assert.Contains("FeedbackRequested += OnFeedbackRequested", probe, StringComparison.Ordinal);

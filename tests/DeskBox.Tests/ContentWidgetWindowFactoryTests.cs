@@ -47,7 +47,6 @@ public sealed class ContentWidgetWindowFactoryTests : IDisposable
 
     [Theory]
     [InlineData(WidgetKind.Tags)]
-    [InlineData(WidgetKind.SystemMonitor)]
     public void CreateContentWindowPlan_ReturnsPlaceholderForFutureKinds(WidgetKind widgetKind)
     {
         var config = CreateConfig("future-window", widgetKind);

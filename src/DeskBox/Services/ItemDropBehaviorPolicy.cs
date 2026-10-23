@@ -1,3 +1,4 @@
+using DeskBox.Helpers;
 using DeskBox.Models;
 using DeskBox.ViewModels;
 
@@ -8,7 +9,8 @@ internal enum ItemDropBehavior
     None,
     FolderImport,
     StackImport,
-    Launch
+    Launch,
+    RecycleBinDelete
 }
 
 /// <summary>
@@ -30,6 +32,16 @@ internal static class ItemDropBehaviorPolicy
         if (item.IsFolder && item.Path.Length > 0)
         {
             return ItemDropBehavior.FolderImport;
+        }
+
+        // The Recycle Bin namespace shortcut is the bin's desktop verb in the
+        // grid: dropping files on it recycles them. Checked before the launch
+        // evaluation because the bin's .lnk has no filesystem target, so no
+        // other behavior can apply.
+        if (NamespaceShortcutHelper.ResolveKind(item) ==
+            NamespaceShortcutKind.RecycleBin)
+        {
+            return ItemDropBehavior.RecycleBinDelete;
         }
 
         return ShortcutLaunchPolicy.EvaluateItem(item) == ShortcutLaunchDecision.Launch

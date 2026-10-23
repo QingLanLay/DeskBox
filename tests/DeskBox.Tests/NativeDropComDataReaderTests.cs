@@ -278,6 +278,65 @@ public sealed class NativeDropComDataReaderTests
         Assert.Empty(actual);
     }
 
+    [Theory]
+    [InlineData("::{645FF040-5081-101B-9F08-00AA002F954E}")]
+    [InlineData("shell:RecycleBinFolder")]
+    [InlineData("::{20D04FE0-2533-429F-87FC-46C294402D99}")]
+    [InlineData("shell:::{21EC2020-3AEA-1069-A2DD-08002B30309D}")]
+    public void NamespaceClassifier_AcceptsPureVirtualShellObjectsAsMaterializable(
+        string parsingName)
+    {
+        // Contract ⑫ close-out (batch 0): a Link hover is only promised for
+        // sources Drop can honor — a pure virtual parsing name materializes
+        // as a PIDL-based .lnk, so the Recycle Bin/This PC/Control Panel drag
+        // class flips from no-drop to an honest Link promise.
+        Assert.True(
+            NativeDropTarget.TryClassifyShellNamespaceItem(
+                parsingName,
+                fileSystemPath: string.Empty,
+                out bool isFileSystemPath));
+        Assert.False(isFileSystemPath);
+    }
+
+    [Fact]
+    public void NamespaceClassifier_TreatsFileSystemBackedItemsAsHdropEquivalent()
+    {
+        Assert.True(
+            NativeDropTarget.TryClassifyShellNamespaceItem(
+                "C:\\some\\item.txt",
+                fileSystemPath: "C:\\some\\item.txt",
+                out bool isFileSystemPath));
+        Assert.True(isFileSystemPath);
+    }
+
+    [Theory]
+    [InlineData("")]
+    [InlineData("   ")]
+    [InlineData("a\0b")]
+    public void NamespaceClassifier_RejectsUnusableIdentities(string parsingName)
+    {
+        Assert.False(
+            NativeDropTarget.TryClassifyShellNamespaceItem(
+                parsingName,
+                fileSystemPath: string.Empty,
+                out _));
+    }
+
+    [Fact]
+    public void NamespaceClassifier_EnforcesParsingNameLengthBound()
+    {
+        Assert.True(
+            NativeDropTarget.TryClassifyShellNamespaceItem(
+                new string('a', 1024),
+                fileSystemPath: string.Empty,
+                out _));
+        Assert.False(
+            NativeDropTarget.TryClassifyShellNamespaceItem(
+                new string('a', 1025),
+                fileSystemPath: string.Empty,
+                out _));
+    }
+
     [UnmanagedFunctionPointer(CallingConvention.StdCall)]
     private delegate int GetDataCallback(
         nint self,

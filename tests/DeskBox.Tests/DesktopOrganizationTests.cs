@@ -605,8 +605,13 @@ public sealed class DesktopOrganizationTests : IDisposable
     }
 
     [Fact]
-    public async Task Settings_DisablesAutomaticOrganizationWhenLastEffectiveRuleIsRemoved()
+    public async Task Settings_KeepsAutoOrganizationWhenUserDisablesLastRule()
     {
+        // Only a truly deleted target (a widget that entered DeletedWidgetIds)
+        // may close the master switch programmatically. A user disabling the
+        // last rule is not a deletion: the switch and baseline stay as they
+        // are, and re-enabling the rule resumes organization (feedback
+        // 323/370/405 contract).
         string mappedFolder = Directory.CreateDirectory(
             Path.Combine(_root, "auto-target")).FullName;
         var settings = new SettingsService(Path.Combine(_root, "auto-settings"));
@@ -619,12 +624,303 @@ public sealed class DesktopOrganizationTests : IDisposable
             IsEnabled = false
         });
         settings.Settings.DesktopAutoOrganizationEnabled = true;
-        settings.Settings.DesktopAutoOrganizationBaselineUtc = DateTimeOffset.UtcNow;
+        DateTimeOffset baseline = DateTimeOffset.UtcNow;
+        settings.Settings.DesktopAutoOrganizationBaselineUtc = baseline;
 
         await settings.SaveAsync();
 
+        Assert.True(settings.Settings.DesktopAutoOrganizationEnabled);
+        Assert.Equal(baseline, settings.Settings.DesktopAutoOrganizationBaselineUtc);
+    }
+
+    [Fact]
+    public async Task Settings_KeepsAutoOrganizationWhenMappedPathIsNotBackfilledYet()
+    {
+        // Boot race: load-time normalize runs before WidgetViewModel backfills
+        // MappedFolderPath. The rule must be treated as pending there - the
+        // switch stays on, the rule stays enabled, the baseline is kept, and
+        // nothing is disabled on disk (feedback 323/370/405).
+        string settingsDir = Path.Combine(_root, "pending-settings");
+        var settings = new SettingsService(settingsDir);
+        WidgetConfig widget = new()
+        {
+            Id = "pending-widget",
+            Name = "Documents",
+            WidgetKind = WidgetKind.File,
+            MappedFolderPath = "",
+            FollowsDefaultStoragePath = false
+        };
+        settings.Settings.Widgets.Add(widget);
+        settings.Settings.DesktopOrganizationRules.Add(new DesktopOrganizationRule
+        {
+            TargetWidgetId = widget.Id,
+            CategoryIds = [DesktopOrganizationCategoryIds.Documents]
+        });
+        settings.Settings.DesktopAutoOrganizationEnabled = true;
+        DateTimeOffset baseline = DateTimeOffset.UtcNow;
+        settings.Settings.DesktopAutoOrganizationBaselineUtc = baseline;
+
+        await settings.SaveAsync();
+
+        Assert.True(settings.Settings.DesktopAutoOrganizationEnabled);
+        Assert.True(
+            settings.Settings.DesktopOrganizationRules.Single(rule =>
+                rule.TargetWidgetId == widget.Id).IsEnabled,
+            "a not-yet-backfilled mapped path must suspend the rule, not disable it");
+        Assert.Equal(baseline, settings.Settings.DesktopAutoOrganizationBaselineUtc);
+
+        var reloaded = new SettingsService(settingsDir);
+        await reloaded.LoadAsync();
+        Assert.True(reloaded.Settings.DesktopAutoOrganizationEnabled);
+        Assert.True(
+            reloaded.Settings.DesktopOrganizationRules.Single(rule =>
+                rule.TargetWidgetId == widget.Id).IsEnabled);
+        Assert.NotNull(reloaded.Settings.DesktopAutoOrganizationBaselineUtc);
+    }
+
+    [Fact]
+    public async Task Settings_BackfillsDefaultPathWidgetAndKeepsItsRulePending()
+    {
+        // A default-storage widget's path backfill happens later in the same
+        // normalize pass than the rule validity check: at decision time the
+        // path is still empty, so the rule must survive the same pass as
+        // pending.
+        var settings = new SettingsService(Path.Combine(_root, "backfill-settings"));
+        WidgetConfig widget = new()
+        {
+            Id = "backfill-widget",
+            Name = "Documents",
+            WidgetKind = WidgetKind.File,
+            MappedFolderPath = "",
+            FollowsDefaultStoragePath = true,
+            ManagedFolderName = "Documents"
+        };
+        settings.Settings.Widgets.Add(widget);
+        settings.Settings.DesktopOrganizationRules.Add(new DesktopOrganizationRule
+        {
+            TargetWidgetId = widget.Id,
+            CategoryIds = [DesktopOrganizationCategoryIds.Documents]
+        });
+        settings.Settings.DesktopAutoOrganizationEnabled = true;
+
+        await settings.SaveAsync();
+
+        Assert.NotEmpty(settings.Settings.Widgets[0].MappedFolderPath);
+        Assert.True(settings.Settings.DesktopAutoOrganizationEnabled);
+        Assert.True(settings.Settings.DesktopOrganizationRules[0].IsEnabled);
+    }
+
+    [Fact]
+    public async Task EnabledRulesSurviveRestartOnTheAdoptedLayoutStore()
+    {
+        // Steady state after the device-layer split: settings.json holds the
+        // rules but no widgets (the writer strips layout keys once the
+        // layout file is authoritative). The organizer normalize must judge
+        // rule targets only against the merged widget list — running it
+        // before the layout merge treated every enabled rule's target as
+        // deleted and disabled the rule plus the master switch on every
+        // boot (feedback #553 family). This pin doubles as the load-order
+        // pin: moving the organizer normalize back ahead of the merge turns
+        // the second boot's assertions red.
+        string mappedFolder = Directory.CreateDirectory(
+            Path.Combine(_root, "restart-rule")).FullName;
+        string settingsDir = Path.Combine(_root, "restart-settings");
+
+        var first = new SettingsService(settingsDir);
+        await first.LoadAsync();
+        WidgetConfig widget = CreateWidget("Documents", mappedFolder);
+        first.Settings.Widgets.Add(widget);
+        first.Settings.DesktopOrganizationRules.Add(new DesktopOrganizationRule
+        {
+            TargetWidgetId = widget.Id,
+            CategoryIds = [DesktopOrganizationCategoryIds.Documents]
+        });
+        first.Settings.DesktopAutoOrganizationEnabled = true;
+        await first.SaveAsync();
+
+        // Second boot reads the stripped settings.json plus the
+        // authoritative widget-layout.json — the state every real restart
+        // sees after adoption.
+        var second = new SettingsService(settingsDir);
+        await second.LoadAsync();
+        Assert.True(second.Settings.DesktopAutoOrganizationEnabled);
+        Assert.Single(second.Settings.DesktopOrganizationRules);
+        Assert.True(second.Settings.DesktopOrganizationRules[0].IsEnabled);
+
+        await second.SaveAsync();
+        Assert.True(second.Settings.DesktopAutoOrganizationEnabled);
+        Assert.True(second.Settings.DesktopOrganizationRules[0].IsEnabled);
+    }
+
+    [Fact]
+    public async Task EnabledRulesSurviveFirstBootFromLegacySettings()
+    {
+        // The upgrade-path shape: settings.json still carries the legacy
+        // widgets key (no widget-layout.json yet — adoption happens during
+        // this very load). The organizer normalize must judge the rules
+        // against the adopted list and keep them enabled; the pre-merge
+        // widget list is exactly what the legacy key provides, so this pin
+        // guards the DefaultMissing adoption branch of the merged normalize.
+        string mappedFolder = Directory.CreateDirectory(
+            Path.Combine(_root, "legacy-first-boot")).FullName;
+        string settingsDir = Path.Combine(_root, "legacy-first-settings");
+
+        var legacy = new SettingsService(settingsDir);
+        WidgetConfig widget = CreateWidget("Documents", mappedFolder);
+        legacy.Settings.Widgets.Add(widget);
+        legacy.Settings.DesktopOrganizationRules.Add(new DesktopOrganizationRule
+        {
+            TargetWidgetId = widget.Id,
+            CategoryIds = [DesktopOrganizationCategoryIds.Documents]
+        });
+        legacy.Settings.DesktopAutoOrganizationEnabled = true;
+        // Saving before any load keeps the layout keys inside settings.json
+        // (the store is not authoritative yet) — the legacy on-disk shape.
+        await legacy.SaveAsync();
+
+        var upgraded = new SettingsService(settingsDir);
+        await upgraded.LoadAsync();
+        Assert.True(upgraded.Settings.DesktopAutoOrganizationEnabled);
+        Assert.True(upgraded.Settings.DesktopOrganizationRules[0].IsEnabled);
+    }
+
+    [Fact]
+    public async Task EnabledRulesSurviveSessionWithCorruptLayoutStore()
+    {
+        // The untrusted-topology branch: settings.json is stripped (rules
+        // only) and BOTH layout files are corrupt. The load falls to
+        // DefaultAfterFailure, the merged flag stays false, and neither the
+        // load-time nor the save-time organizer normalize may disable rules
+        // against the untrusted (empty) widget list.
+        string mappedFolder = Directory.CreateDirectory(
+            Path.Combine(_root, "corrupt-layout")).FullName;
+        string settingsDir = Path.Combine(_root, "corrupt-layout-settings");
+
+        var first = new SettingsService(settingsDir);
+        await first.LoadAsync();
+        WidgetConfig widget = CreateWidget("Documents", mappedFolder);
+        first.Settings.Widgets.Add(widget);
+        first.Settings.DesktopOrganizationRules.Add(new DesktopOrganizationRule
+        {
+            TargetWidgetId = widget.Id,
+            CategoryIds = [DesktopOrganizationCategoryIds.Documents]
+        });
+        first.Settings.DesktopAutoOrganizationEnabled = true;
+        await first.SaveAsync();
+
+        // Corrupt the durable pair so the second boot cannot recover it.
+        string layoutPath = Path.Combine(settingsDir, "widget-layout.json");
+        string backupPath = layoutPath + ".bak";
+        Assert.True(File.Exists(layoutPath));
+        await File.WriteAllTextAsync(layoutPath, "{ not json");
+        if (File.Exists(backupPath))
+        {
+            await File.WriteAllTextAsync(backupPath, "{ not json");
+        }
+
+        var second = new SettingsService(settingsDir);
+        await second.LoadAsync();
+        Assert.True(second.Settings.DesktopAutoOrganizationEnabled);
+        Assert.True(second.Settings.DesktopOrganizationRules[0].IsEnabled);
+
+        // Saves inside the untrusted session must keep the rules too.
+        await second.SaveAsync();
+        Assert.True(second.Settings.DesktopAutoOrganizationEnabled);
+        Assert.True(second.Settings.DesktopOrganizationRules[0].IsEnabled);
+    }
+
+    [Fact]
+    public async Task Settings_ClosesAutoOrganizationAndKeepsBaselineWhenLastTargetIsDeleted()
+    {
+        // A truly deleted target (widget in DeletedWidgetIds) remains the only
+        // path that may close the master switch automatically, but the
+        // baseline is preserved: the watcher reconciles with
+        // BaselineUtc ?? now, and clearing it would widen the organization
+        // window after the feature is turned back on (feedback 323/370/405
+        // contract).
+        string mappedFolder = Directory.CreateDirectory(
+            Path.Combine(_root, "deleted-target")).FullName;
+        string settingsDir = Path.Combine(_root, "deleted-settings");
+        var settings = new SettingsService(settingsDir);
+        WidgetConfig widget = CreateWidget("Documents", mappedFolder);
+        settings.Settings.Widgets.Add(widget);
+        settings.Settings.DesktopOrganizationRules.Add(new DesktopOrganizationRule
+        {
+            TargetWidgetId = widget.Id,
+            CategoryIds = [DesktopOrganizationCategoryIds.Documents]
+        });
+        settings.Settings.DesktopAutoOrganizationEnabled = true;
+        DateTimeOffset baseline = DateTimeOffset.UtcNow;
+        settings.Settings.DesktopAutoOrganizationBaselineUtc = baseline;
+
+        settings.RemoveWidget(widget.Id);
+        await settings.SaveAsync();
+
         Assert.False(settings.Settings.DesktopAutoOrganizationEnabled);
-        Assert.Null(settings.Settings.DesktopAutoOrganizationBaselineUtc);
+        Assert.Equal(baseline, settings.Settings.DesktopAutoOrganizationBaselineUtc);
+        var reloaded = new SettingsService(settingsDir);
+        await reloaded.LoadAsync();
+        Assert.False(reloaded.Settings.DesktopAutoOrganizationEnabled);
+        Assert.Equal(baseline, reloaded.Settings.DesktopAutoOrganizationBaselineUtc);
+        Assert.False(reloaded.Settings.DesktopOrganizationRules[0].IsEnabled);
+    }
+
+    [Fact]
+    public async Task Settings_DisablesOnlyTheDeletedTargetsRuleAndKeepsSwitchAlive()
+    {
+        string survivorFolder = Directory.CreateDirectory(
+            Path.Combine(_root, "survivor-target")).FullName;
+        string removedFolder = Directory.CreateDirectory(
+            Path.Combine(_root, "removed-target")).FullName;
+        var settings = new SettingsService(Path.Combine(_root, "partial-settings"));
+        WidgetConfig survivor = CreateWidget("Images", survivorFolder);
+        WidgetConfig removed = CreateWidget("Documents", removedFolder);
+        settings.Settings.Widgets.Add(survivor);
+        settings.Settings.Widgets.Add(removed);
+        settings.Settings.DesktopOrganizationRules.Add(new DesktopOrganizationRule
+        {
+            TargetWidgetId = survivor.Id,
+            CategoryIds = [DesktopOrganizationCategoryIds.Images]
+        });
+        settings.Settings.DesktopOrganizationRules.Add(new DesktopOrganizationRule
+        {
+            TargetWidgetId = removed.Id,
+            CategoryIds = [DesktopOrganizationCategoryIds.Documents]
+        });
+        settings.Settings.DesktopAutoOrganizationEnabled = true;
+
+        settings.RemoveWidget(removed.Id);
+        await settings.SaveAsync();
+
+        Assert.True(settings.Settings.DesktopAutoOrganizationEnabled);
+        Assert.True(settings.Settings.DesktopOrganizationRules.Single(rule =>
+            rule.TargetWidgetId == survivor.Id).IsEnabled);
+        Assert.False(settings.Settings.DesktopOrganizationRules.Single(rule =>
+            rule.TargetWidgetId == removed.Id).IsEnabled);
+    }
+
+    [Fact]
+    public async Task Settings_KeepsRulePendingWhenTargetWidgetIsDisabled()
+    {
+        // A disabled widget is a recoverable state: re-enabling the widget
+        // resumes organization, so its rule must not be killed.
+        string mappedFolder = Directory.CreateDirectory(
+            Path.Combine(_root, "disabled-target")).FullName;
+        var settings = new SettingsService(Path.Combine(_root, "disabled-settings"));
+        WidgetConfig widget = CreateWidget("Documents", mappedFolder);
+        widget.IsDisabled = true;
+        settings.Settings.Widgets.Add(widget);
+        settings.Settings.DesktopOrganizationRules.Add(new DesktopOrganizationRule
+        {
+            TargetWidgetId = widget.Id,
+            CategoryIds = [DesktopOrganizationCategoryIds.Documents]
+        });
+        settings.Settings.DesktopAutoOrganizationEnabled = true;
+
+        await settings.SaveAsync();
+
+        Assert.True(settings.Settings.DesktopAutoOrganizationEnabled);
+        Assert.True(settings.Settings.DesktopOrganizationRules[0].IsEnabled);
     }
 
     [Fact]

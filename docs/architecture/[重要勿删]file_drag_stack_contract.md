@@ -101,7 +101,7 @@ DeskBox 的文件拖拽分为两类，绝不能混为一套操作：
 
 改用容器级 `CanDrag`（由 ListView 容器样式设置，等价于内部调用 `UIElement.StartDragAsync`）后，`DragStarting` 里的两个值分别携带各自语义：
 
-- `AllowedOperations`：**按 OS 分档**。Windows 11 为 `Copy | Move`（Explorer 执行原生移动、修饰键生效、冲突对话框原生处理，第三方按 `Copy` 也能收）。**Windows 10 必须收敛为单值**（`ResolveDragOutAllowedOperations`：移动/跟随 → `Move`，复制 → `Copy`）——2026-10-01 真机实测，Win10 的 Explorer 对任何公告多效果的非 Shell 源拖放一律弹"复制/移动/取消"选择框（代理到达的拖放不含按键状态，Shell 无法确认唯一默认操作）；只有"单值效果且等于目标默认"才静默执行。偏好值在 Win10 不生效。
+- `AllowedOperations`：**按 OS 分档**。Windows 11 为 `Copy | Move`（Explorer 执行原生移动、修饰键生效、冲突对话框原生处理，第三方按 `Copy` 也能收）。**Windows 10 必须收敛为单值**（`ResolveDragOutAllowedOperations`：移动 → `Move`；跟随/未知 → `Copy`；复制 → `Copy`。2026-10-14 勘误：原文写"移动/跟随 → Move"，与代码及测试相反——feedback 500 实测 Win10 单值 `Move` 会被 IM 式接收方解析成 Move 并自删原件入回收站，跟随档因此保守公告 `Copy`，代价是跟随档拖出到 Explorer 默认变复制；`FileItemMultiDragTests.ResolveDragOutAllowedOperations_Win10DefaultNeverOffersMove` 钉死此行为）——2026-10-01 真机实测，Win10 的 Explorer 对任何公告多效果的非 Shell 源拖放一律弹"复制/移动/取消"选择框（代理到达的拖放不含按键状态，Shell 无法确认唯一默认操作）；只有"单值效果且等于目标默认"才静默执行。偏好值在 Win10 不生效。
 - `RequestedOperation`：偏好的唯一载体，只对 Windows 11 有意义（跟随 → `None`，移动 → `Move`，复制 → `Copy`）。早期"None 使 Win10 不弹菜单"的说法已于 2026-10-01 实测证伪：弹菜单的判定在允许集，不在偏好位。
 - XAML 把 `Copy|Move|Link` 三者全选视为"无偏好"而跳过写入，因此 `Link` 目前不对外公告；Alt 拖出创建快捷方式与任务栏固定暂不支持。
 
@@ -125,8 +125,8 @@ DeskBox 私有文件载荷的移动/快捷方式意图由目标端自行执行�
 ## 5. 完整路由矩阵
 
 | 源 | 目标 | 路由/处理 | 是否改磁盘 | 是否改叠放/顺序 | 关键完成规则 |
-| --- | --- | --- | ---: | ---: | --- |
-| 主表面独立文件 | 同格主表面插入线 | `surface-reorder` | 否 | 是 | 内部完成不得为 `Move` |
+| --- | --- | --- | --- | ---: | --- |
+| 主表面独立文件（含多选块） | 同格主表面插入线 | `surface-reorder`（多选按稳定整块提交，见 5.3） | 否 | 是 | 内部完成不得为 `Move` |
 | 非弹窗叠放成员 | 原叠放成员区域 | 主表面成员排序 | 否 | 是 | 保持成员身份，仅改 override 顺序 |
 | 非弹窗叠放成员 | 叠放范围外的主表面 | `MoveVisibleItemForReorder` | 否 | 是 | 解除成员关系并插入为独立显示单元 |
 | 弹窗叠放成员 | 同一弹窗列表 | `stack-reorder` | 否 | 是 | 使用弹窗插入索引；内部完成不得为 `Move` |
@@ -134,6 +134,7 @@ DeskBox 私有文件载荷的移动/快捷方式意图由目标端自行执行�
 | 同格独立文件/其他叠放成员 | 目标叠放卡片或弹窗表面 | `stack-membership` | 否 | 是 | `AddItemsToStack`；同一源叠放为无操作 |
 | 叠放卡片 | 同格主表面 | `StackReorderKey` 对应的表面排序 | 否 | 是 | 只调整显示单元顺序 |
 | 桌面/Explorer | 格子主表面 | 外部导入 | 是 | 可能 | 按映射目录与用户策略复制/移动/创建快捷方式 |
+| 桌面/Explorer 的 Shell 命名空间对象（回收站/此电脑/控制面板等） | 格子主表面/叠放 | `namespace-materialize`（2026-10-16 批 0）：有文件系统路径→并入外部导入并去重；纯虚拟项→PIDL .lnk（SetIDList）物化后走导入；判定镜像粘贴侧 `ShellNamespaceClipboardItem` | 是（新建 .lnk） | 可能 | Link 回执优先；提取为零→`ZeroResultDropBlocked` toast（⑫） |
 | 桌面/Explorer | 叠放 | 先外部导入，再加入叠放 | 是 | 是 | 只有成功导入的新项才加入叠放 |
 | 其他格子 | 本格主表面/叠放 | 跨格文件传输 | 是 | 可能 | 目标完成传输后通知源格子；DeskBox 源不再由 Shell 二次清理 |
 | Explorer/其他格子 | 已经直接包含源项目的物理目录 | `same-directory` 无操作 | 否 | 否 | 不生成编号副本，不通知源格子移出 |
@@ -150,6 +151,17 @@ DeskBox 私有文件载荷的移动/快捷方式意图由目标端自行执行�
 跨格传输由目标格子实际执行文件移动，并通过 `NotifyItemsMovedOutAsync` 告知源格子哪些路径成功。对于 DeskBox 自己的原生 Shell 载荷，再向源端返回 `Move` 会形成第二次源清理。因此 `ResolveSafeDropCompletionOperation` 在“DeskBox 来源 + 目标已完成真实移动”时返回 `None`；目标完成通知和后续磁盘协调才是事实依据。
 
 非 DeskBox 来源只有在请求移动数与实际完成数完全一致时才返回 `Move`。部分完成、取消或失败必须返回 `None`。
+
+### 5.3 多选拖动排序的整块提交语义（2026-10-14）
+
+主表面（非弹窗）的 `surface-reorder` 支持多选块提交，约束如下：
+
+- 提交端必须解析**全部**被拖项（`ResolveSurfaceReorderItems` + `_surfaceReorderDraggedItems`），禁止回退到 `FirstOrDefault` 单锚点坍缩——那是"多选拖动只动一个"旧缺陷的根因；
+- 块内相对顺序 = 拖动起算时的可见顺序；落点换算用"非移动显示单元计数"（`TryMoveDisplayUnitOverrides` / `TryComputeItemBlockReorder`），不依赖会被成员变更移位的裸索引；
+- 非投影路径用逐项 `Items.Move` 施加（保留 ListView 选择）；投影路径整批只允许**常数次**投影重建 + persist（`MoveVisibleItemsForReorder` 按相位各一次），禁止对 N 个选中项循环调用单项原语——那是投影重建风暴（#576 同型）；
+- 内联展开叠放的成员：插入点落在本叠放成员区内 → 复用 `MoveStackMembersForReorder` 成员整块排序；落在区外 → 先批量解除成员关系（`DetachStackMembersForBlockReorder`，语义镜像 `RemoveItemsFromStack` 的解散/转手动分支）再作为散件入块；
+- 叠放卡片与文件混选拖动排序维持既有语义（锚点为叠放头时只重排叠放卡片，`GetSelectedItems` 本就剔除卡片）；
+- 投影重建会丢掉拖动用的多选；主表面与弹窗的重排成功路径都必须按路径重放选择（`ScheduleSurfaceReorderSelectionRestore` / `ScheduleStackPopoverReorderSelectionRestore`，低优先级延迟——弹窗侧需双跳以落在 `ApplyStackProjectionChange` 的延迟清选之后）。
 
 ## 6. 事件链与状态清理
 
@@ -185,7 +197,8 @@ WinUI 的拖拽完成时刻可能晚于物理鼠标松开。2026-09-04 的两次
 `FileDragSessionState` 从成功准备源载荷开始记录会话，直到 `Items_DropCompleted` 才允许释放恢复。紧凑窗口和主表面的释放探针在会话进行期间只记录 `ReleaseRecoveryPending`，不得清空 Shell 拖拽状态、重建排序投影或清理载荷缓存，也不得用任意固定延迟替代系统完成通知。当前有两个受限的恢复入口：
 
 - `CompleteReleasedDragSession`：先确认源端系统拖拽已结束，再在主表面排序已激活、有最后位置、鼠标仍在主格子内、且没有文件夹/叠放子目标高亮时提交；
-- `TryCompleteReleasedStackPopoverReorder`：只在弹窗拖拽激活、有有效插入索引、鼠标仍在弹窗列表、存在源路径、且没有其他内部目标已处理时提交。
+- `TryCompleteReleasedStackPopoverReorder`：只在弹窗拖拽激活、有有效插入索引、鼠标仍在弹窗列表、存在源路径、且没有其他内部目标已处理时提交；
+- `ShouldLaunchFromCompletedInternalDrag` + `TryLaunchInternalDragOnShortcut`（第三条受限路径，2026-10-14 补登记）：WinUI 不向条目表面投递同 ListView 拖动的 `Drop`，完成回调内解析"内部拖拽落到快捷方式"并启动；行为安全（内部拖拽启动不清源），此前未入清单。
 
 完成回调中，已由内部目标处理的操作不能再次恢复；未被目标处理且结果为 `None` 的操作按取消处理，不得凭最后插入线补做排序。正常 Drop 仍在目标事件内完成编排。主表面、叠放卡片和弹窗目标必须先将临时 `Move` 改为 `None`，再做任何可能刷新或回收控件的工作，最后按成功结果选择安全完成值。恢复提交后将本次拖拽标记为内部已处理，避免源端启动外部移出协调。
 
@@ -251,8 +264,8 @@ WinUI 的拖拽完成时刻可能晚于物理鼠标松开。2026-09-04 的两次
 - `CoGetCallerTID` 官方文档只覆盖"正在服务 COM 调用"两态：S_OK=同进程调用方、S_FALSE=跨进程调用方（跨机器也是 S_FALSE）。**未文档化的"无 COM 调用上下文"实测返回 S_OK 且 tid=0**（裸线程与已初始化 MTA 均如此，见 `tests/DeskBox.Tests/CoGetCallerTidProbeTests.cs`）——因此进程内直调（WinUI 掩码推导、内部直调）不会被误判为跨进程，`S_FALSE` 的唯一来源就是真跨进程调用。探针以契约测试形式锁定；WinAppSDK 升级后若拖拽允许集合异常，先跑该测试与 verbose 日志（`[DragStart] Preferred DropEffect read in-process`）定位。
 - 官方明示 `CoGetCallerTID` 返回信息可被伪造、不得用于安全决策。本用途是 UX 级格式过滤（隐藏与否均不构成提权面），非安全边界。
 - 包装器对象由 `FileDragSourceGuardDataObject` 内静态单槽显式持有到下一场拖拽，CCW 生存不再单独依赖 WinUI `IDataObjectProvider` 未文档化的 AddRef 合约。
-- 行为决策记录（已随 StartDragAsync 方案收敛）：不再写 Preferred DropEffect，拖出到资源管理器的默认操作与 Explorer 原生拖拽一致——同卷移动、跨卷复制；包装层不再做跨进程格式隐藏，`CoGetCallerTID` 从拖拽路径移除（探针测试保留作回归）。目标按公告的 `Move` 自行完成移动时，Ctrl+Z 是"撤销移动"，文件回到原处。
-- 治理项（后续收敛）：`RegisterClipboardFormat` 在 `NativeDropDescriptionWriter`/`NativeDropTarget`/`ShellClipboardHelper` 仍有 3 处历史私有声明（均在 P/Invoke 棘轮预算内）；新代码一律走 `Win32Helper.GetRegisteredClipboardFormat`，旧三处收敛时可同步缩 `PlatformInteropExpectedViolations` 预算。
+- 行为决策记录（已随 StartDragAsync 方案收敛）：不再写 Preferred DropEffect，拖出到资源管理器的默认操作与 Explorer 原生拖拽一致——同卷移动、跨卷复制；包装层不再做跨进程格式隐藏，`CoGetCallerTID` 从拖拽路径移除（探针测试保留作回归）。目标按公告的 `Move` 自行完成移动时，Ctrl+Z 是"撤销移动"，文件回到原处。（2026-10-14 勘误：本段"决策记录"已过时——`Items_DragStarting` 现按托管拖出档位写 `RequestedOperation`（Move/Copy 档非 None），XAML 将其落成 OLE preferred effect，`FileDragSourceGuardDataObject` 实现单效 Preferred 的存/答；以 §4 的现行语义为准。）
+- 治理项（2026-10-14 更新）：`RegisterClipboardFormat` 在 `NativeDropDescriptionWriter`/`NativeDropTarget`/`ShellClipboardHelper` 的 3 处历史私有声明仍在，但 `PlatformInteropExpectedViolations` 清单已随批 31（2026-09-26）清空成**硬零法**——不再存在"预算"可缩，原文的收敛挂钩作废；新代码一律走 `Win32Helper.GetRegisteredClipboardFormat`。
 
 ### 8.2 `.lnk` 在格子/叠放内排序后进入回收站
 
@@ -312,6 +325,11 @@ WinUI 的拖拽完成时刻可能晚于物理鼠标松开。2026-09-04 的两次
 18. 不要让托管目录复制递归进入 junction、符号链接或已经访问过的物理目录。
 19. 不要把“两个格子 ID 不同”等同于一定需要文件传输；源项目已经位于有效目标目录时必须无操作。
 20. 不要为了让文件夹快捷方式可在格子内打开而把 `WidgetItem.IsFolder` 改为 `true`，也不要把拖拽源路径从 `.lnk` 改成 `TargetPath`。
+21. 不要让**纯进程内状态**走 OLE 自定义格式通道运输（2026-10-13 待办色点教训）：自定义格式只能异步 `GetDataAsync` 读——Drop 处理器里无 deferral 的 await 会让拖拽事务在首 yield 即终结（丢/挂），且空自定义格式拖过桌面会被 shell 逐格式探测（0x8000FFFF 崩溃向量）。内部状态一律走进程内字段（`_draggedTodoItemId`/`_draggedColorMarker` 先例），`DragStarting` 只保留拖拽视觉（RequestedOperation/Title）。
+22. Drop/DragOver 处理器里任何 `await` 都必须先 `e.GetDeferral()` 并在 finally `Complete()`；ResilientJsonStore 只重试一种 IOException，存盘类异常须在处理器内 catch 收敛，不得逃出 async void 升级为全局故障。
+23. **回调帧内禁止同步重操作（2026-10-14 回调隔离批立法）**：任何消息/OLE/win32k 回调上下文（subclass proc、`IDropTarget` 四方法、H.NotifyIcon 托盘命令、输入路由事件处理器）内不得同步执行窗口手术（建窗/Show/`SetWindowPos`/`SetForegroundWindow`/`SetWindowLongPtr`，雷达另跟踪 `EndDeferWindowPos` 批次提交点）、进程启动、跨进程 COM 写或大额磁盘物化——一律经 `UiDispatch.PostAfterCallback`（或入口 `Task.Yield`）推迟出回调帧，激活类落地单元配"窗口存活 + 前台快照"守卫（纯落床/重排类落地只需窗口存活与拖动守卫，无前台语义）；`CallbackDepth` 雷达计数诊断可见。**双轨细则**：XAML 处理器沿用第 22 条 GetDeferral 铁律；原生 `IDropTarget` 没有 GetDeferral 对应物——返回值、手势认领（`MarkLaunchConsumedForCurrentContent` 先例）与乐观完成效果必须在回调内同步决定，只有副作用出回调，失败不得倒写已发出的回执；虚拟文件物化走官方异步协议（`IDataObjectAsyncCapability`：回调内 `StartOperation` → 早返回 → 单 MTA worker 提取 → 完成后写回执 + `EndOperation`），最终回执由 worker 在其自己的套间写。**豁免与注记**：①热键 `ReleaseAllModifiers` 为输入族豁免（同步保留：推迟释放会误放用户正持有的新组合）；②`TryEnqueue` 落在 CoreMessaging 私有窗口，模态循环（TrackPopupMenuEx/DoDragDrop/SC_MOVE）期间**照常派发**——推迟语义是"下一个派发点"而非"模态结束后"，落地单元必须对"菜单开着/拖拽进行中"安全；只有自起裸 DoDragDrop 的输入岛饿死（8.1.1b）与 UI 线程被占死是泵死亡场景；③深度计数雷达是同线程探测器，跨线程同步 `SendMessage` 类违规（后台线程 `SetWindowPos` 打到 UI 线程窗口）不在其视野，靠评审把关；④拖拽悬停反馈所需的跨进程**读**（DragEnter 的格式探测、路径 hints 的单次 `GetData`）豁免——OLE 悬停反馈机制本身建立在跨进程读上；本条禁止的是窗口手术、进程启动、大额物化与协议外的写；⑤协议强制的 `StartOperation`/能力协商出站 RPC 在回调帧内同步执行（官方时序唯一窗口）——**挂起/冻结源进程**（AV 隔离、沙箱冻结、调试器 attach）会以此冻结目标 UI 线程，与 Explorer 对同型源的行为一致（无浅修空间；受控对照实验在修复方案矩阵 C 附行）；⑥`ContentWidgetWindow_Activated` 的 `ReassertRaisedWidgetGroupAfterDeskBoxActivation` **必须保持同步**（2026-10-15 自激环事故立法）：`SetForegroundWindow(active)` 的 no-op 性依赖"事件处理器同步运行时 active 就是前台"这一时序，推迟一拍会把 no-op 变成真实前台切换并自生成 Activated 事件流（3ms 环扫全组）。**通用判别式：凡"以激活/抢前台收尾"的处理逻辑，推迟前必须先回答"落地时前台还是它吗"——答案不确定即禁止推迟。**反钉测试 `ContentWindowActivated_ReassertStaysSynchronous` 禁止该 handler 再出现 PostAfterCallback。
+
+**已知未收口清单（2026-10-14 回调隔离批第五轮终扫登记，均为存量、非本批引入；⑨⑩为 2026-10-15 第六~八轮生态审查增补）**：①设置页自启开关——`DirectStartupTaskBackend` 的 `Process.Start(schtasks)`+`WaitForExit(10s)` 跑在 ToggleSwitch 回调帧内（涉渠道门控域，须专项修）；②叠放弹窗标题重命名——DoubleTapped 帧内建窗+Show+Activate、提交帧内关窗+回交激活（主表面同交互已走 TryEnqueue，见 ContentWidgetWindow.Commands.cs）；③设置页三个辅助窗口入口（立即整理/新手引导/识别显示器）Click 帧内建窗+Show+Activate——托盘同名入口已有 yield；④"选择叠放内容"菜单项 Click 帧内同步开弹窗（主开关路径已 TryEnqueue）；⑤部件关闭按钮 Click 帧内 SW_HIDE+床位手术；⑥窗口阴影"打开系统设置"按钮 Click 帧内 Process.Start（常量目标名）；⑦`WritePerformedDropEffect` 用 `AllocHGlobal` 冒充 HGLOBAL 介质的旧债（2026-09-30 审计 #17，异步 worker 跨套间场景放大了它）；⑧WM_MOUSEACTIVATE subclass 与 XAML routed 处理器同一次点击各跑一遍 256 窗覆盖遍历（结果共享待做）；⑨**新 Outlook 型源**（CF_HDROP 通告+延迟渲染+实现异步能力，含 Chromium 内核 WebView2 宿主）：被 `hasHDrop` 路由排除在异步协议外，Drop 内同步 `GetData(CF_HDROP)` 得 DV_E_FORMATETC → 悬停可放、落下静默无效（存量缺陷；官方修法=同步路径 CF_HDROP 提取失败且 `GetAsyncMode()==TRUE` 时改道 `HandleDeferredDropMaterialization`，worker 端补 CF_HDROP GetData——**待拍板后实施**）；⑩**VirtualDrops 孤儿清扫缺失**：进程死亡（更新安装/崩溃/硬终止）、`ExtractVirtualFiles` 逐文件 catch 之外的逃逸异常、Shutdown 丢弃完成单元、widget 关窗解绑事件后已入队任务的完成即弃——四类路径都会留下已物化的 temp 文件且全仓无启动清扫（修复设计=空闲期清扫，**须避开启动账本风暴熔断器管辖的启动窗口**）；⑪**XAML 输入帧存量同步开窗面**（与②③同族，统一治理）：widget 右键菜单"配置"入口（WidgetSettingsMenuHelper 的 Click→ShowSettings/ShowGlanceSettings）、设置页"查看更新日志"按钮等；⑫**完成侧反馈缺失与慢存在性检查——已于 2026-10-16 系统监控格批 0 收口（保留编号以稳定交叉引用）**：异步提取为零→`ZeroResultDropBlocked` 事件+toast（键 `Widget.ImportZeroResult`）；import-busy 拒收（同步与延期两处）→`ImportBusyDropBlocked`+toast（键 `Widget.ImportBlockedBusy`）；两键已 12 语言，事件处理器一律 `TryEnqueue` 出回调帧（§23）。`LaunchDroppedFilesDeferred` 的 `File.Exists` 门槛已移后台线程（`LaunchDroppedFilesResolved` 留 UI 线程串行）。同一批把严格 AppsFolder 分类泛化为**可物化命名空间项**：非 AppsFolder 的 CIDA 项有文件系统路径→HDROP 等价导入、纯虚拟→`CreateShellNamespaceShortcut`（SetIDList）物化，均在 UI STA 一拍执行（禁走 MTA worker，见 §8.1.1a 同族事故记录）；无可用标识的项（空/超长/含 NUL 解析名）仍如实 no-drop；zip-folder 拖拽按同一判定处理（有可物化标识即物化 .lnk，与粘贴路径行为对齐）。**presence-only 假承诺已于 2026-10-15 现场实锤并修复**（开始菜单/zip 拖拽悬停许诺后零产出——DragEnter 已恢复严格 AppsFolder 分类；AppsFolder 提取改回 UI STA 一拍执行——壳命名空间 API 在 MTA worker 上解析为零条目）。雷达计数对⑤会首先报警——这正是它的用途。
 
 ## 10. 日志判读
 
@@ -399,6 +417,7 @@ dotnet test .\tests\DeskBox.Tests\DeskBox.Tests.csproj `
 14. 建立外部父子映射；父格子进入子根后，两个格子之间拖动到根表面或叠放必须无操作且不生成 `(2)` 文件。
 15. 从父格子或 Explorer 把子映射根拖回子格子，必须在创建第一层目标目录前拒绝。
 16. 使用 junction 别名重复上述同目录和后代判断；托管复制遇到回指祖先的目录链接必须失败且不留下递归目录链。
+17. 从桌面拖 Shell 命名空间对象（回收站、此电脑、控制面板）进格子主表面与叠放：悬停如实显示 Link；落下生成可双击打开的 .lnk（混合多选与文件拖入并存时按粘贴判定去重）；有文件系统路径的命名空间项并入正常导入；不可物化源仍如实 no-drop；构造零成果场景（如提取失败）出现 `Widget.ImportZeroResult` toast；连续快速拖入触发 import-busy 时出现 `Widget.ImportBlockedBusy` toast。
 
 ### 11.3 发布边界
 
@@ -417,6 +436,7 @@ dotnet test .\tests\DeskBox.Tests\DeskBox.Tests.csproj `
 | 叠放卡片目标与加入叠放 | `Controls/WidgetContents/FileSurfaceContent.ItemVisuals.cs` |
 | 弹窗成员排序与释放恢复 | `Controls/WidgetContents/FileSurfaceContent.StackPopover.cs` |
 | 叠放投影、成员覆盖和显示单元顺序 | `ViewModels/WidgetViewModel.Stacks.cs` |
+| 多选整块排序原语与成员批量脱离 | `WidgetViewModel.Stacks.cs`（`MoveVisibleItemsForReorder`/`TryMoveDisplayUnitOverrides`/`DetachStackMembersForBlockReorder`）+ `WidgetViewModel.SortingAndWatchers.cs`（`MoveItemsForReorder`/`TryComputeItemBlockReorder`） |
 | 紧凑窗口鼠标释放恢复 | `Controls/WidgetShell.xaml.cs` |
 | 原生 Explorer 拖入 | `Helpers/NativeDropTarget.cs` 及关联文件传输服务 |
 

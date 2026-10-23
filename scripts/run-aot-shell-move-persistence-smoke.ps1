@@ -1,4 +1,4 @@
-[CmdletBinding()]
+﻿[CmdletBinding()]
 param(
     [Parameter(Mandatory)]
     [string]$SummaryPath,
@@ -271,7 +271,7 @@ function Assert-PhaseEvidence {
     $operations = $Result.shellMove.operations
     if ($Phase -ceq "Mutate") {
         if (-not [bool]$operations.productMenuPathCompleted -or
-            -not [bool]$operations.lateTaskPendingWhenProductReturned -or
+            -not [bool]$operations.abandonedButCompleted -or
             @($operations.menus).Count -ne 4 -or
             @($operations.invocations).Count -ne 4) {
             throw "Shell move mutate did not retain the complete menu and invocation matrix."
@@ -282,7 +282,7 @@ function Assert-PhaseEvidence {
             -Name "Mutate.invocationModes"
         Assert-Sequence `
             -Actual @($operations.invocations | ForEach-Object { [string]$_.fileServiceOutcome }) `
-            -Expected @("Returned", "Returned", "Returned", "RecoveredPending") `
+            -Expected @("Returned", "Returned", "Returned", "AbandonedButCompleted") `
             -Name "Mutate.outcomes"
         Assert-Sequence `
             -Actual @($operations.invocations | ForEach-Object { [string]$_.completedCount }) `
@@ -290,13 +290,19 @@ function Assert-PhaseEvidence {
             -Name "Mutate.completedCounts"
         Assert-Sequence `
             -Actual @($operations.menus | ForEach-Object { [string]$_.feedbackSeverity }) `
-            -Expected @("Success", "Success", "Info", "Success") `
+            -Expected @("Success", "Success", "Info", "Error") `
             -Name "Mutate.feedbackSeverities"
         foreach ($menu in @($operations.menus)) {
+            $expectedFeedbackKey = "file-move-desktop"
+            if ([string]$menu.feedbackSeverity -ceq "Error") {
+                # Watchdog-abandoned transfers report through the standard
+                # action-error route; the move-back toast is success/info only.
+                $expectedFeedbackKey = "file-action-error"
+            }
             if ([long]$menu.hostWindowHandle -ne [long]$Result.shellMove.windowHandle -or
                 -not [bool]$menu.moveEnabled -or
                 -not [bool]$menu.automationInvoked -or
-                [string]$menu.feedbackKey -cne "file-move-desktop") {
+                [string]$menu.feedbackKey -cne $expectedFeedbackKey) {
                 throw "Shell move menu evidence did not retain the real host owner or product feedback route."
             }
         }
@@ -309,20 +315,27 @@ function Assert-PhaseEvidence {
         if (-not [bool]$operations.invocations[0].actualShellOperation -or
             -not [bool]$operations.invocations[1].simulatedOperationsAborted -or
             -not [bool]$operations.invocations[2].simulatedOperationsAborted -or
-            [datetimeoffset]$operations.invocations[3].productReturnedAtUtc -ge
-                [datetimeoffset]$operations.invocations[3].nativeTaskReturnedAtUtc) {
+            -not [bool]$operations.invocations[3].nativeTaskReturned) {
             throw "Shell move invocation branch evidence is inconsistent."
         }
         Assert-Sequence `
             -Actual @($Result.shellMove.after.history | ForEach-Object { [string]$_.itemCount }) `
-            -Expected @("1", "0", "1", "1") `
+            -Expected @("1", "1", "1") `
             -Name "Mutate.historyItemCounts"
+        Assert-Sequence `
+            -Actual @($Result.shellMove.after.history | ForEach-Object { [string]$_.isFailed }) `
+            -Expected @("True", "False", "False") `
+            -Name "Mutate.historyFailedFlags"
     }
     elseif ($Phase -ceq "VerifyRestore") {
         Assert-Sequence `
             -Actual @($Result.shellMove.before.history | ForEach-Object { [string]$_.itemCount }) `
-            -Expected @("1", "0", "1", "1") `
+            -Expected @("1", "1", "1") `
             -Name "VerifyRestore.beforeHistory"
+        Assert-Sequence `
+            -Actual @($Result.shellMove.before.history | ForEach-Object { [string]$_.isFailed }) `
+            -Expected @("True", "False", "False") `
+            -Name "VerifyRestore.beforeHistoryFailedFlags"
         if (-not [bool]$operations.restoredByHarness -or
             [bool]$operations.compensation -or
             [int]$operations.restoredFileCount -ne 3 -or
@@ -652,12 +665,18 @@ try {
     if ($runtimeFailureLogLines.Count -gt 0) {
         throw "Shell move runtime log contains a failure: $($runtimeFailureLogLines -join ' | ')"
     }
-    foreach ($requiredLog in @(
-            "[FileTransfer] Shell move start",
-            "[FileTransfer] Shell move recovered from pending call",
-            "[FileTransfer] Pending shell move call eventually returned")) {
-        if (@($runtimeLogLines | Where-Object { $_.Contains($requiredLog) }).Count -eq 0) {
-            throw "Shell move runtime log omitted '$requiredLog'."
+    # Every fixture mode logs the start line (the hook sits after it);
+    # only the Real mode reaches the returned line, and only the watchdog-
+    # abandoned Late mode produces the abandonment line.
+    foreach ($logExpectation in @(
+            @{ Line = "[FileTransfer] Windows shell transfer start"; Count = 4 },
+            @{ Line = "[FileTransfer] Windows shell transfer returned"; Count = 1 },
+            @{ Line = "[FileTransfer] Windows shell transfer abandoned by the watchdog"; Count = 1 })) {
+        $actualCount = @($runtimeLogLines | Where-Object {
+                $_.Contains($logExpectation.Line) }).Count
+        if ($actualCount -ne $logExpectation.Count) {
+            throw ("Shell move runtime log observed '{0}' {1} time(s); expected exactly {2}." -f
+                $logExpectation.Line, $actualCount, $logExpectation.Count)
         }
     }
 

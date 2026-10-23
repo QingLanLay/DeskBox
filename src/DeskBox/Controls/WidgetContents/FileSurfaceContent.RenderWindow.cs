@@ -209,6 +209,11 @@ public sealed partial class FileSurfaceContent
             return;
         }
 
+        // The expanded-label overlay is positioned against the viewport;
+        // scrolling invalidates that position, so collapse it rather than
+        // chase the item.
+        HideNameExpansion(isPopoverView: false);
+
         // Grow while unrendered content remains and the user is within two
         // viewports of the rendered end, so scrolling never hits a wall.
         if (scrollViewer.VerticalOffset + (scrollViewer.ViewportHeight * 2) >=

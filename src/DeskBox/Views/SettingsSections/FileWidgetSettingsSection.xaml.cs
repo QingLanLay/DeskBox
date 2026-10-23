@@ -7,14 +7,14 @@ using Microsoft.UI.Xaml.Controls;
 namespace DeskBox.Views.SettingsSections;
 
 /// <summary>
-/// The file-widget overview page. Its five compiled bindings span three
+/// The file-widget overview page. Its compiled bindings span three
 /// feature domains, so instead of one shell-facade dependency property the
 /// control carries three typed editor dependencies (batch 45, the
-/// blueprint-approved x:Bind bridge-free exception): the stack master
-/// switch and its summary read the file-stack editor, the folder-open
-/// combo reads the feature-widgets editor, and the file-item context-menu
-/// toggle reads the interaction editor. Each editor owns its persisted
-/// projection and writes through its coordinator.
+/// blueprint-approved x:Bind bridge-free exception): the open-mode combo
+/// and its summary read the file-stack editor, the folder-open combo reads
+/// the feature-widgets editor, and the file-item context-menu toggle reads
+/// the interaction editor. Each editor owns its persisted projection and
+/// writes through its coordinator.
 /// </summary>
 public sealed partial class FileWidgetSettingsSection : UserControl
 {
@@ -64,20 +64,42 @@ public sealed partial class FileWidgetSettingsSection : UserControl
 
     /// <summary>
     /// Mounts the managed-storage (收纳与路径) section inside the overview
-    /// card stack — directly below the desktop-organization card and above
-    /// the file-display card — instead of as a sibling appended at page end.
+    /// card stack — directly below the 桌面整理 entry card (index 0) and
+    /// above 文件显示: storage path card → drag-behavior expander. The
+    /// desktop-shortcut card rides in the same section template but moves to
+    /// the very bottom of this stack, below the 桌面原版右键菜单 card, so the
+    /// entry-point toggle reads as the page's closing item instead of sitting
+    /// between the storage cards.
     /// </summary>
+    private const int ManagedStorageSectionIndex = 1;
+
     public void AttachManagedStorageSection(FrameworkElement section)
     {
-        int index = Math.Min(1, SectionCardsPanel.Children.Count);
+        int index = Math.Min(ManagedStorageSectionIndex, SectionCardsPanel.Children.Count);
         SectionCardsPanel.Children.Insert(index, section);
+
+        // The lookup stays inside the mounted section's own XAML namescope,
+        // so the card keeps its window-side wiring (toggle handler and state
+        // refresh resolve it by name) even after moving into this panel.
+        // WinUI's UIElementCollection.Add does not reparent: the card must be
+        // removed from the storage panel first or the append throws
+        // 0x800F1000 and aborts the whole first navigation into this page.
+        if (section.FindName("ManagedStorageDesktopShortcutCard") is FrameworkElement shortcutCard &&
+            shortcutCard.Parent is Panel storagePanel)
+        {
+            storagePanel.Children.Remove(shortcutCard);
+            SectionCardsPanel.Children.Add(shortcutCard);
+        }
     }
 
     public event EventHandler<SettingsSectionNavigationRequestedEventArgs>? NavigationRequested;
 
     private void NestedSettingsButton_Click(object sender, RoutedEventArgs e)
     {
-        if (sender is Button { Tag: string sectionTag })
+        // Drill-down rows are Buttons, but the 文件显示-style entry cards are
+        // toolkit SettingsCards (ButtonBase, not Button); match the shell's
+        // FrameworkElement guard so both navigate.
+        if (sender is FrameworkElement { Tag: string sectionTag })
         {
             NavigationRequested?.Invoke(this, new SettingsSectionNavigationRequestedEventArgs(sectionTag));
         }

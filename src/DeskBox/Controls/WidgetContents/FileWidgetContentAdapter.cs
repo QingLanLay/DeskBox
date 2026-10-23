@@ -201,6 +201,16 @@ public sealed class FileWidgetContentAdapter :
         Surface?.OnWindowRevealCompleted();
     }
 
+    public override void OnWindowLongHidden()
+    {
+        // Model-level only: nulling icons outside the render window keeps
+        // every view warm for the next reveal. The file surface itself must
+        // not grow a long-hidden teardown path (pinned by
+        // WidgetVisualActivityContractTests), so this goes straight to the
+        // view model instead of through the surface.
+        ViewModel.ReleaseUnrenderedItemIcons();
+    }
+
     public override void OnCompactStateChanged(bool collapsed)
     {
         Surface?.OnCompactStateChanged(collapsed);
@@ -357,6 +367,16 @@ public sealed class FileWidgetContentAdapter :
     internal void NotifyNativeDropBlockedUndisplayable(int undisplayableCount)
     {
         Surface?.NotifyNativeDropBlockedUndisplayable(undisplayableCount);
+    }
+
+    internal void NotifyNativeDropZeroResult()
+    {
+        Surface?.NotifyNativeDropZeroResult();
+    }
+
+    internal void NotifyNativeDropImportBusy()
+    {
+        Surface?.NotifyNativeDropImportBusy();
     }
 
     internal bool IsInternalReorderDrag(DataPackageView dataView)

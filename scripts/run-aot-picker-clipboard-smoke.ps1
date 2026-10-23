@@ -318,6 +318,11 @@ function Invoke-PickerDialogAutomation {
     }
 
     if ($Action -ceq "Cancel") {
+        # UIA invoke first: empirically the app-side observer only latches
+        # the dialog while the slow UIA tree search gives it time, and the
+        # invoke does cancel the WinRT pick call. The native tier chain then
+        # closes the #32770 shell the invoke leaves behind (destruction is
+        # verified by polling IsWindow, not a single visibility probe).
         $buttons = Get-AutomationElementsById `
             -Root $window `
             -AutomationId "2"
@@ -344,6 +349,11 @@ function Invoke-PickerDialogAutomation {
             $snapshot.commitMethod = "WindowPattern.Close"
             $snapshot.invoked = $true
         }
+
+        Start-Sleep -Milliseconds 2000
+        $dialogHandle = [IntPtr][long]$snapshot.windowHandle
+        [void][DeskBoxPickerWindowNative]::ClosePickerDialog($dialogHandle)
+        [void][DeskBoxPickerWindowNative]::CloseAllPickerDialogs($ProcessId)
     }
     else {
         $edits = Get-AutomationElementsById `
@@ -375,6 +385,17 @@ function Invoke-PickerDialogAutomation {
             throw "The picker did not expose a writable file-name field."
         }
 
+        # UIA value-set reports success but this dialog generation can ignore
+        # it (observed: the commit then selects whatever is highlighted in
+        # the dialog's current folder). Set the path natively as well —
+        # WM_SETTEXT on the classic edit control (id 1148).
+        $selectDialogHandle = [IntPtr][long]$snapshot.windowHandle
+        [void][DeskBoxPickerWindowNative]::SetFileNameEdit(
+            $selectDialogHandle,
+            $SelectedPath)
+        $snapshot.editMethod =
+            [string]$snapshot.editMethod + "+native-settext"
+
         $buttons = Get-AutomationElementsById `
             -Root $window `
             -AutomationId "1"
@@ -402,6 +423,20 @@ function Invoke-PickerDialogAutomation {
                 [string]$snapshot.commitMethod)
         if (-not [bool]$snapshot.invoked) {
             throw "The picker commit button did not expose InvokePattern."
+        }
+
+        # The UIA invoke reports success but does not always commit on this
+        # dialog generation (the pick then returns cancelled). Give it a
+        # moment, then commit through the classic path: BM_CLICK on the
+        # dialog's real Open button (control id 1).
+        Start-Sleep -Milliseconds 1500
+        $selectDialogHandle = [IntPtr][long]$snapshot.windowHandle
+        if ([DeskBoxPickerWindowNative]::IsDialogVisible($selectDialogHandle)) {
+            [void][DeskBoxPickerWindowNative]::ClickDialogButton(
+                $selectDialogHandle,
+                1)
+            $snapshot.commitMethod =
+                [string]$snapshot.commitMethod + "+native-bm-click"
         }
     }
 
@@ -440,7 +475,7 @@ function Assert-PhaseResult {
         @($Result.seededWidgetIds).Count -ne 2 -or
         [int]$Result.loadedSurfaceCount -ne 2 -or
         [int]$Result.visibleSurfaceCount -ne 2 -or
-        @($Result.locales).Count -ne 12) {
+        @($Result.locales).Count -ne 13) {
         throw "Picker/StorageItems phase '$Phase' evidence is incomplete."
     }
 
@@ -696,6 +731,101 @@ public static class DeskBoxPickerWindowNative
         IntPtr wParam,
         string lParam);
 
+    public static bool ClickDialogButton(IntPtr windowHandle, int controlId)
+    {
+        IntPtr button = GetDlgItem(windowHandle, controlId);
+        if (button == IntPtr.Zero)
+        {
+            return false;
+        }
+
+        SendPointerMessage(
+            button,
+            BmClick,
+            IntPtr.Zero,
+            IntPtr.Zero);
+        return true;
+    }
+
+    public static bool SetFileNameEdit(IntPtr windowHandle, string path)
+    {
+        IntPtr edit = GetDlgItem(windowHandle, 1148);
+        if (edit == IntPtr.Zero)
+        {
+            Console.WriteLine("[picker-dialog] no edit control 1148 found");
+            return false;
+        }
+
+        bool set = SendStringMessage(
+            edit,
+            WmSetText,
+            IntPtr.Zero,
+            path) != IntPtr.Zero;
+        // WM_SETTEXT alone does not raise EN_CHANGE, so the dialog keeps
+        // treating the filename box as untouched (Open stays a no-op on an
+        // empty selection). Notify the dialog explicitly.
+        const int EnChange = 0x0300;
+        const int WmCommand = 0x0111;
+        SendMessage(
+            windowHandle,
+            WmCommand,
+            (IntPtr)((EnChange << 16) | 1148),
+            edit);
+        Console.WriteLine(
+            "[picker-dialog] native WM_SETTEXT on edit 1148: " + set);
+        return set;
+    }
+
+    public static IntPtr[] FindVisibleDialogs(int processId)
+    {
+        var matches = new System.Collections.Generic.List<IntPtr>();
+        EnumWindows((windowHandle, _) =>
+        {
+            if (!IsWindowVisible(windowHandle))
+            {
+                return true;
+            }
+
+            uint ownerProcessId;
+            GetWindowThreadProcessId(windowHandle, out ownerProcessId);
+            if (ownerProcessId != (uint)processId)
+            {
+                return true;
+            }
+
+            var className = new StringBuilder(64);
+            GetClassName(windowHandle, className, className.Capacity);
+            if (!string.Equals(className.ToString(), "#32770", StringComparison.Ordinal))
+            {
+                return true;
+            }
+
+            matches.Add(windowHandle);
+            return true;
+        }, IntPtr.Zero);
+        return matches.ToArray();
+    }
+
+    // The WinRT picker shell on current Win11 builds can leave more than one
+    // #32770 alive after a cancel (the COM call returns cancelled while a
+    // second shell lingers); the app-side observer latches whichever it finds
+    // first, so every shell must be gone.
+    public static void CloseAllPickerDialogs(int processId)
+    {
+        IntPtr[] shells = FindVisibleDialogs(processId);
+        Console.WriteLine(
+            "[picker-dialog] sweep: " + shells.Length +
+            " visible #32770 in pid " + processId +
+            " [" + string.Join(",", shells) + "]");
+        foreach (IntPtr dialog in shells)
+        {
+            Console.WriteLine(
+                "[picker-dialog] extra shell handle=" + dialog +
+                ", closing via tier chain");
+            ClosePickerDialog(dialog);
+        }
+    }
+
     public static IntPtr FindVisibleDialog(int processId)
     {
         IntPtr match = IntPtr.Zero;
@@ -706,7 +836,8 @@ public static class DeskBoxPickerWindowNative
                 return true;
             }
 
-            GetWindowThreadProcessId(windowHandle, out uint ownerProcessId);
+            uint ownerProcessId;
+            GetWindowThreadProcessId(windowHandle, out ownerProcessId);
             if (ownerProcessId != (uint)processId)
             {
                 return true;
@@ -738,6 +869,144 @@ public static class DeskBoxPickerWindowNative
             IntPtr.Zero,
             IntPtr.Zero);
         return true;
+    }
+
+    // The modern "Open" dialog ignores UIAutomation Invoke on its Cancel
+    // entry (observed: dialog stays visible for the whole close window
+    // while the pick task hangs). Enumerate what the dialog actually
+    // contains, then try the classic paths in order: control id 2 BM_CLICK,
+    // WM_SYSCOMMAND SC_CLOSE, posted WM_CLOSE.
+    [DllImport("user32.dll")]
+    private static extern IntPtr GetDlgItem(
+        IntPtr windowHandle,
+        int controlId);
+
+    [DllImport("user32.dll")]
+    private static extern IntPtr SendMessage(
+        IntPtr windowHandle,
+        int message,
+        IntPtr wParam,
+        IntPtr lParam);
+
+    [DllImport("user32.dll")]
+    private static extern bool PostMessage(
+        IntPtr windowHandle,
+        int message,
+        IntPtr wParam,
+        IntPtr lParam);
+
+    [DllImport("user32.dll")]
+    private static extern bool EnumChildWindows(
+        IntPtr windowHandle,
+        EnumWindowsCallback callback,
+        IntPtr state);
+
+    [DllImport("user32.dll", CharSet = CharSet.Unicode)]
+    private static extern int GetWindowText(
+        IntPtr windowHandle,
+        System.Text.StringBuilder text,
+        int maxCount);
+
+    [DllImport("user32.dll")]
+    private static extern int GetDlgCtrlID(IntPtr windowHandle);
+
+    public static string DumpDialogChildren(IntPtr windowHandle)
+    {
+        var report = new StringBuilder();
+        EnumChildWindows(
+            windowHandle,
+            (child, state) =>
+            {
+                var text = new StringBuilder(128);
+                GetWindowText(child, text, text.Capacity);
+                var cls = new StringBuilder(128);
+                GetClassName(child, cls, cls.Capacity);
+                report
+                    .Append("child id=")
+                    .Append(GetDlgCtrlID(child))
+                    .Append(" class=")
+                    .Append(cls)
+                    .Append(" text='")
+                    .Append(text)
+                    .Append("'")
+                    .AppendLine();
+                return true;
+            },
+            IntPtr.Zero);
+        return report.ToString();
+    }
+
+    private static bool WaitForDialogDestruction(
+        IntPtr windowHandle,
+        int milliseconds)
+    {
+        for (int i = 0; i < milliseconds / 100; i++)
+        {
+            if (!IsWindow(windowHandle))
+            {
+                return true;
+            }
+
+            System.Threading.Thread.Sleep(100);
+        }
+
+        return !IsWindow(windowHandle);
+    }
+
+    public static bool ClosePickerDialog(IntPtr windowHandle)
+    {
+        if (!IsWindow(windowHandle))
+        {
+            return true;
+        }
+
+        Console.WriteLine(
+            "[picker-dialog] target handle=" + windowHandle +
+            " children:");
+        Console.WriteLine(DumpDialogChildren(windowHandle));
+
+        IntPtr cancel = GetDlgItem(windowHandle, 2);
+        if (cancel != IntPtr.Zero)
+        {
+            SendPointerMessage(
+                cancel,
+                BmClick,
+                IntPtr.Zero,
+                IntPtr.Zero);
+            if (WaitForDialogDestruction(windowHandle, 2000))
+            {
+                Console.WriteLine("[picker-dialog] closed via cancel id 2 BM_CLICK");
+                return true;
+            }
+        }
+
+        SendMessage(
+            windowHandle,
+            0x0112,
+            (IntPtr)0xF060,
+            IntPtr.Zero);
+        if (WaitForDialogDestruction(windowHandle, 2000))
+        {
+            Console.WriteLine("[picker-dialog] closed via WM_SYSCOMMAND SC_CLOSE");
+            return true;
+        }
+
+        PostMessage(windowHandle, 0x0010, IntPtr.Zero, IntPtr.Zero);
+        bool closed = WaitForDialogDestruction(windowHandle, 3000);
+        Console.WriteLine(
+            "[picker-dialog] posted WM_CLOSE as last resort, destroyed=" +
+            closed);
+        return closed;
+    }
+
+    public static bool IsWindowAlive(IntPtr windowHandle)
+    {
+        return IsWindow(windowHandle);
+    }
+
+    public static bool IsDialogVisible(IntPtr windowHandle)
+    {
+        return IsWindow(windowHandle) && IsWindowVisible(windowHandle);
     }
 
     public static bool SetWindowText(IntPtr windowHandle, string value)
@@ -772,7 +1041,7 @@ if ([int]$auditSummary.auditProfileVersion -ne 59 -or
     [string]$auditSummary.platform -cne "x64" -or
     [string]$auditSummary.runtimeIdentifier -cne "win-x64" -or
     @($auditSummary.warningCodes | Where-Object { $_ -ceq "WMC1506" }).Count -ne 0 -or
-    [int]$auditSummary.warningCodeCounts.WMC1510 -ne 864 -or
+    [int]$auditSummary.warningCodeCounts.WMC1510 -ne 790 -or
     @($auditSummary.alwaysThrowMessages).Count -ne 0 -or
     [int]$auditSummary.rustNative.abiVersion -ne 2 -or
     [int]$auditSummary.rustNative.capabilities -ne 511) {
@@ -802,8 +1071,8 @@ $pickerSourceRoot = Join-Path $fixtureRoot "sources\picker"
 $clipboardSourceRoot = Join-Path $fixtureRoot "sources\clipboard"
 $pickerFileName = "picker-$runId.txt"
 $clipboardFileName = "storage-file-$runId.txt"
-$clipboardFolderName = "storage-folder-$runId"
-$nestedFileName = "nested-$runId.txt"
+$clipboardFolderName = "storage-folder"
+$nestedFileName = "nested.txt"
 $pickerSourceFile = Join-Path $pickerSourceRoot $pickerFileName
 $clipboardSourceFile = Join-Path $clipboardSourceRoot $clipboardFileName
 $clipboardSourceFolder = Join-Path $clipboardSourceRoot $clipboardFolderName

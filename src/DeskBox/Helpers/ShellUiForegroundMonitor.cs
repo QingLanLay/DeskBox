@@ -44,14 +44,39 @@ internal static class ShellUiForegroundMonitor
                 if (dialogs.Count > 0)
                 {
                     IntPtr dialogHwnd = dialogs[0];
-                    Win32Helper.SetWindowTopMost(dialogHwnd);
-                    bool foreground = Win32Helper.SetForegroundWindow(dialogHwnd);
-                    App.Log(
-                        $"[ShellActivation] Promoted owned native dialog " +
-                        $"dialog=0x{dialogHwnd.ToInt64():X} " +
-                        $"owner=0x{ownerHwnd.ToInt64():X} " +
-                        $"topMost={Win32Helper.IsWindowTopMost(dialogHwnd)} " +
-                        $"foreground={foreground}");
+                    // Discovery stays on this background thread (the UI thread
+                    // is blocked inside the native resolve modal — that is why
+                    // this monitor exists); only the promotion hops to the UI
+                    // thread, so the window operations run on the owning
+                    // thread instead of injecting cross-thread synchronous
+                    // sends into it at an arbitrary moment (drag-freeze
+                    // family). The landing re-validates liveness and process
+                    // ownership because the dialog may already be gone.
+                    uint ownerProcessId = (uint)Environment.ProcessId;
+                    UiDispatch.PostAfterCallback(() =>
+                    {
+                        if (!Win32Helper.IsWindow(dialogHwnd) ||
+                            !Win32Helper.IsWindowVisible(dialogHwnd))
+                        {
+                            return;
+                        }
+
+                        Win32Helper.GetWindowThreadProcessId(
+                            dialogHwnd,
+                            out uint dialogProcessId);
+                        if (dialogProcessId != ownerProcessId)
+                        {
+                            return;
+                        }
+
+                        Win32Helper.SetWindowTopMost(dialogHwnd);
+                        bool foreground = Win32Helper.SetForegroundWindow(dialogHwnd);
+                        App.Log(
+                            $"[ShellActivation] Promoted owned native dialog " +
+                            $"dialog=0x{dialogHwnd.ToInt64():X} " +
+                            $"topMost={Win32Helper.IsWindowTopMost(dialogHwnd)} " +
+                            $"foreground={foreground}");
+                    });
                     return;
                 }
 

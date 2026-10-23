@@ -152,15 +152,6 @@ public sealed partial class SearchPopupViewModel : ObservableObject, IDisposable
     /// </summary>
     public bool IsApplyingBackgroundResultRefresh { get; private set; }
 
-    /// <summary>Public access to recent queries for UI binding.</summary>
-    public IReadOnlyList<string> RecentQueries => _historyService.RecentQueries;
-
-    /// <summary>Public access to favorite queries for UI binding.</summary>
-    public IReadOnlyList<string> FavoriteQueries => _historyService.FavoriteQueries;
-
-    /// <summary>True if there's any history or recommendations to display.</summary>
-    public bool HasHistoryOrRecommendations => _recentContentItems.Any();
-
     /// <summary>
     /// Whether search history (recent queries + favorites) is currently being
     /// recorded and shown. Driven by the <see cref="AppSettings.SearchSaveHistory"/> flag.
@@ -1149,14 +1140,38 @@ public sealed partial class SearchPopupViewModel : ObservableObject, IDisposable
             case SearchResultKind.File:
                 if (!string.IsNullOrWhiteSpace(item.DetailPath))
                 {
-                    if (DeskBox.Platform.Win32Helper.OpenFileOrChooseApp(
-                            OwnerWindowHandle,
-                            item.DetailPath))
+                    string filePath = item.DetailPath;
+                    IntPtr ownerHandle = OwnerWindowHandle;
+                    // Search execution handlers run inside KeyDown / DoubleTapped
+                    // / PointerReleased callback frames; the shell open is a
+                    // cross-process Explorer call with no timeout and must
+                    // leave the frame by one dispatcher turn — the same
+                    // discipline as FileSurfaceContent.Opening's yield
+                    // (drag-freeze family). The popup commits optimistically;
+                    // a failed open is logged instead of reopening the popup.
+                    DeskBox.Platform.UiDispatch.PostAfterCallback(() =>
                     {
-                        CommitExecution(item);
-                        HidePopupCallback?.Invoke();
-                        return true;
-                    }
+                        try
+                        {
+                            bool opened =
+                                DeskBox.Platform.Win32Helper.OpenFileOrChooseApp(
+                                    ownerHandle,
+                                    filePath);
+                            if (!opened)
+                            {
+                                App.Log(
+                                    "[SearchPopup] Deferred open returned no " +
+                                    $"handler path='{filePath}'");
+                            }
+                        }
+                        catch (Exception ex)
+                        {
+                            App.Log($"[SearchPopup] Deferred open failed: {ex.Message}");
+                        }
+                    });
+                    CommitExecution(item);
+                    HidePopupCallback?.Invoke();
+                    return true;
                 }
                 break;
 
@@ -1164,7 +1179,18 @@ public sealed partial class SearchPopupViewModel : ObservableObject, IDisposable
                 // Folders always open in Explorer.
                 if (!string.IsNullOrWhiteSpace(item.DetailPath))
                 {
-                    OpenPath(item.DetailPath);
+                    string folderPath = item.DetailPath;
+                    DeskBox.Platform.UiDispatch.PostAfterCallback(() =>
+                    {
+                        try
+                        {
+                            OpenPath(folderPath);
+                        }
+                        catch (Exception ex)
+                        {
+                            App.Log($"[SearchPopup] Deferred folder open failed: {ex.Message}");
+                        }
+                    });
                     CommitExecution(item);
                     HidePopupCallback?.Invoke();
                     return true;
@@ -1173,7 +1199,20 @@ public sealed partial class SearchPopupViewModel : ObservableObject, IDisposable
 
             case SearchResultKind.Action:
                 CommitExecution(item, recordResult: false);
-                ExecuteAction(item.ActionId);
+                // Actions open windows (settings / todo / quick capture) —
+                // same callback-isolation rule as the File/Folder branches
+                // above; the window work leaves the input frame.
+                DeskBox.Platform.UiDispatch.PostAfterCallback(() =>
+                {
+                    try
+                    {
+                        ExecuteAction(item.ActionId);
+                    }
+                    catch (Exception ex)
+                    {
+                        App.Log($"[SearchPopup] Deferred action failed: {ex.Message}");
+                    }
+                });
                 return true;
 
             case SearchResultKind.Todo:
@@ -1185,15 +1224,6 @@ public sealed partial class SearchPopupViewModel : ObservableObject, IDisposable
                 CommitExecution(item);
                 ContentRequested?.Invoke(this, item);
                 return true;
-
-            case SearchResultKind.History:
-            case SearchResultKind.Favorite:
-                if (!string.IsNullOrWhiteSpace(item.HistoryQuery))
-                {
-                    ApplyQuery(item.HistoryQuery);
-                    return true;
-                }
-                break;
         }
 
         return false;
@@ -1211,22 +1241,31 @@ public sealed partial class SearchPopupViewModel : ObservableObject, IDisposable
         try
         {
             string path = item.DetailPath;
-            if (item.Kind == SearchResultKind.Folder)
+            // GetParent is pure path arithmetic. The explorer spawn leaves the
+            // input-callback frame (drag-freeze family); direct-open is only
+            // for drive roots whose parent cannot be selected in.
+            bool openDirectly = item.Kind == SearchResultKind.Folder &&
+                string.IsNullOrWhiteSpace(Directory.GetParent(path)?.FullName);
+            DeskBox.Platform.UiDispatch.PostAfterCallback(() =>
             {
-                string? parent = Directory.GetParent(path)?.FullName;
-                if (!string.IsNullOrWhiteSpace(parent))
+                try
                 {
-                    System.Diagnostics.Process.Start("explorer.exe", $"/select,\"{path}\"");
+                    if (openDirectly)
+                    {
+                        OpenPath(path);
+                    }
+                    else
+                    {
+                        System.Diagnostics.Process.Start(
+                            "explorer.exe",
+                            $"/select,\"{path}\"");
+                    }
                 }
-                else
+                catch (Exception ex)
                 {
-                    OpenPath(path);
+                    App.Log($"[SearchPopup] Failed to open result location: {ex.Message}");
                 }
-            }
-            else
-            {
-                System.Diagnostics.Process.Start("explorer.exe", $"/select,\"{path}\"");
-            }
+            });
 
             CommitExecution(item);
             HidePopupCallback?.Invoke();
@@ -1249,8 +1288,6 @@ public sealed partial class SearchPopupViewModel : ObservableObject, IDisposable
                 _historyService.RecordResult(item);
             }
         }
-
-        OnPropertyChanged(nameof(IsCurrentQueryFavorite));
     }
 
     /// <summary>
@@ -1259,41 +1296,6 @@ public sealed partial class SearchPopupViewModel : ObservableObject, IDisposable
     public void InvokeAction(string actionId)
     {
         ExecuteAction(actionId);
-    }
-
-    /// <summary>
-    /// Sets the search box query (used by history/favorite activation) and re-runs search.
-    /// </summary>
-    public void ApplyQuery(string query)
-    {
-        Query = query;
-        QueryApplied?.Invoke(this, query);
-    }
-
-    /// <summary>
-    /// Whether the current query is pinned as a favorite.
-    /// </summary>
-    public bool IsCurrentQueryFavorite => _historyService.IsFavorite(Query);
-
-    /// <summary>
-    /// Clears all recent search history (one-click cleanup) and refreshes the
-    /// empty-state tabs so the recent-searches tab collapses.
-    /// </summary>
-    public void ClearRecentSearches()
-    {
-        _historyService.ClearRecentHistory();
-        RebuildEmptyStateItems();
-        OnPropertyChanged(nameof(HasHistoryOrRecommendations));
-    }
-
-    /// <summary>
-    /// Clears both favorites and recent searches completely.
-    /// </summary>
-    public void ClearAllHistory()
-    {
-        _historyService.ClearAllHistory();
-        RebuildEmptyStateItems();
-        OnPropertyChanged(nameof(HasHistoryOrRecommendations));
     }
 
     /// <summary>
@@ -1478,11 +1480,6 @@ public sealed partial class SearchPopupViewModel : ObservableObject, IDisposable
 
     /// <summary>Raised when a DeskBox result should open its exact source item.</summary>
     public event EventHandler<SearchResultItem>? ContentRequested;
-
-    /// <summary>
-    /// Raised when a history/favorite query is applied and the search box should update.
-    /// </summary>
-    public event EventHandler<string>? QueryApplied;
 
     /// <summary>
     /// Raised when a recommendation set published before its shell icons

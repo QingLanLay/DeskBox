@@ -876,32 +876,6 @@ public sealed partial class QuickCaptureSurfaceContent :
     private async void AddButton_Click(object sender, RoutedEventArgs e)
     {
         await RunAsync(AddInputWithFeedbackAsync);
-        InputTextBox.Focus(FocusState.Programmatic);
-    }
-
-    private async void InputTextBox_KeyDown(object sender, KeyRoutedEventArgs e)
-    {
-        bool controlPressed = Win32Helper.IsKeyPressed(
-            Windows.System.VirtualKey.Control);
-        bool saveShortcut = TextBoxEditorShortcutHelper.IsCtrlSaveShortcut(
-            e.Key,
-            controlPressed,
-            Win32Helper.IsKeyPressed(Windows.System.VirtualKey.Shift));
-        if (e.Key != Windows.System.VirtualKey.Enter && !saveShortcut)
-        {
-            return;
-        }
-
-        e.Handled = true;
-        if (saveShortcut || SettingsService.ShouldSubmitEditorOnEnter(
-                _settingsService.Settings.QuickCaptureEditorEnterBehavior,
-                controlPressed))
-        {
-            await RunAsync(AddInputWithFeedbackAsync);
-            return;
-        }
-
-        TextBoxEditorShortcutHelper.InsertLineBreak(InputTextBox);
     }
 
     private void SearchTextBox_KeyDown(object sender, KeyRoutedEventArgs e)
@@ -2925,14 +2899,23 @@ public sealed partial class QuickCaptureSurfaceContent :
         DependencyObject? itemRoot,
         bool isVisible)
     {
-        if (itemRoot is null ||
-            FindQuickCaptureVisualChild<Border>(itemRoot, "QuickCaptureItemActionButtons") is not { } actionButtons)
+        if (itemRoot is null)
         {
             return;
         }
 
-        actionButtons.Opacity = isVisible ? 1 : 0;
-        actionButtons.IsHitTestVisible = isVisible;
+        if (FindQuickCaptureVisualChild<Border>(itemRoot, "QuickCaptureItemActionButtons") is { } actionButtons)
+        {
+            actionButtons.Opacity = isVisible ? 1 : 0;
+            actionButtons.IsHitTestVisible = isVisible;
+        }
+
+        // Same pass also toggles the hover wash so the card itself reacts,
+        // matching the Todo widget's dual hover feedback.
+        if (FindQuickCaptureVisualChild<Border>(itemRoot, "QuickCaptureItemHoverBackground") is { } hoverBackground)
+        {
+            hoverBackground.Opacity = isVisible ? 1 : 0;
+        }
     }
 
     private static T? FindQuickCaptureVisualChild<T>(DependencyObject parent, string name)
@@ -3166,10 +3149,6 @@ public sealed partial class QuickCaptureSurfaceContent :
         object? focused = XamlRoot is null
             ? null
             : FocusManager.GetFocusedElement(XamlRoot);
-        if (ReferenceEquals(focused, InputTextBox))
-        {
-            return "Input";
-        }
         if (ReferenceEquals(focused, SearchTextBox))
         {
             return "Search";
@@ -3188,7 +3167,6 @@ public sealed partial class QuickCaptureSurfaceContent :
         _pendingFocusTarget = null;
         FrameworkElement element = target switch
         {
-            "Input" => InputTextBox,
             "Search" => SearchTextBox,
             "Items" => ItemsList,
             _ => ResponsiveContentGrid

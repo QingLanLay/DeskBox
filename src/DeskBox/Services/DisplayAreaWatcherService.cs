@@ -56,7 +56,7 @@ public sealed class DisplayAreaWatcherService : IDisposable
     public DisplayAreaWatcherService(DispatcherQueue dispatcherQueue)
     {
         _dispatcherQueue = dispatcherQueue;
-        _messageSubclassProc = MessageWindowSubclassProc;
+        _messageSubclassProc = CallbackDepth.WrapSubclassProc(MessageWindowSubclassProc);
         _pollTimer = dispatcherQueue.CreateTimer();
         _pollTimer.Interval = TimeSpan.FromMilliseconds(PollIntervalMs);
         _pollTimer.IsRepeating = true;

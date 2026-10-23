@@ -144,7 +144,11 @@ public sealed class GlanceWidgetPhotoControlsTests
             StringComparison.Ordinal);
         Assert.Contains("CreateGlanceCompactPresentation", host, StringComparison.Ordinal);
         Assert.Contains("ImageSource? backgroundImage = viewModel.HasVisibleCurrentImage", host, StringComparison.Ordinal);
-        Assert.Contains("glance.GetCompactBackgroundImage()", host, StringComparison.Ordinal);
+        Assert.Contains("glance.GetCompactBackgroundImage(", host, StringComparison.Ordinal);
+        Assert.Contains(
+            "ResolveGlanceCompactBackgroundDecodeWidth()",
+            host,
+            StringComparison.Ordinal);
         Assert.Contains("Thumbnail: backgroundImage", host, StringComparison.Ordinal);
         Assert.Contains("UseFullBleedBackground: backgroundImage is not null", host, StringComparison.Ordinal);
         Assert.Contains(
@@ -158,7 +162,14 @@ public sealed class GlanceWidgetPhotoControlsTests
         Assert.Contains("viewModel.DateText", host, StringComparison.Ordinal);
         Assert.Contains("viewModel.WeekdayText", host, StringComparison.Ordinal);
         Assert.Contains("viewModel.TraditionalCalendarTitle", host, StringComparison.Ordinal);
-        Assert.Contains("DecodePixelWidth = 768", adapter, StringComparison.Ordinal);
+        Assert.Contains(
+            "GlanceImageStreamLoader.LoadAsync(bitmap, path)",
+            adapter,
+            StringComparison.Ordinal);
+        Assert.Contains(
+            "DecodePixelWidth = Math.Max(1, decodePixelWidth)",
+            adapter,
+            StringComparison.Ordinal);
         Assert.Contains("ResolveFullBleedOverlayOpacity()", shell, StringComparison.Ordinal);
         Assert.Contains("ResolveFullBleedBackgroundOpacity()", shell, StringComparison.Ordinal);
         Assert.Contains("CompactFullBleedClip.Opacity = useFullBleed", shell, StringComparison.Ordinal);

@@ -28,7 +28,7 @@ internal sealed class WidgetDisplayChangeWatcher : IDisposable
     {
         _hWnd = hWnd;
         _displayChangeAction = displayChangeAction;
-        _subclassProc = WindowSubclassProc;
+        _subclassProc = CallbackDepth.WrapSubclassProc(WindowSubclassProc);
         _timer = dispatcherQueue.CreateTimer();
         _timer.Interval = RestoreDelay;
         _timer.IsRepeating = false;

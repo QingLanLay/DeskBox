@@ -46,6 +46,12 @@ internal static class ActiveDeskBoxDragRegistry
         {
             Active.RemoveAll(
                 entry => now - entry.RegisteredAtUtc > EntryLifetime);
+            // An OLE drag is modal to the pointer: when a new drag begins,
+            // no earlier registration can still be in flight. Any entry
+            // still present belongs to a drag whose DropCompleted was lost
+            // and would otherwise misclassify this same file set as
+            // self-dragged for up to EntryLifetime on its next drop.
+            Active.Clear();
             Active.Add(new Entry(
                 sessionId,
                 widgetId,

@@ -1,4 +1,4 @@
-[CmdletBinding()]
+﻿[CmdletBinding()]
 param(
     [string]$SummaryPath,
 
@@ -4489,7 +4489,7 @@ if ($scenario -ceq "LocalFileSurfacePersistenceRestart") {
         }
         $runtimeDeferredPathLogLines = @(
             $runtimeLogLines | Where-Object {
-                $_.IndexOf("[FileTransfer] Shell move", [StringComparison]::Ordinal) -ge 0 -or
+                $_.IndexOf("[FileTransfer] Windows shell transfer", [StringComparison]::Ordinal) -ge 0 -or
                 $_.IndexOf("[FolderPicker]", [StringComparison]::Ordinal) -ge 0 -or
                 $_.IndexOf("[NativeDrop", [StringComparison]::Ordinal) -ge 0 -or
                 $_.IndexOf("RecycleBin", [StringComparison]::OrdinalIgnoreCase) -ge 0
@@ -6761,7 +6761,7 @@ try {
 
     $expectedLocales = @(
         "zh-CN", "zh-TW", "en-US", "ja-JP", "de-DE", "pt-BR",
-        "hi-IN", "es-ES", "fr-FR", "ar-SA", "bn-BD", "ru-RU")
+        "hi-IN", "es-ES", "fr-FR", "ar-SA", "bn-BD", "ru-RU", "ko-KR")
     $locales = @($smokeResult.locales)
     if ($locales.Count -ne $expectedLocales.Count) {
         throw "Managed UI smoke locale count mismatch."

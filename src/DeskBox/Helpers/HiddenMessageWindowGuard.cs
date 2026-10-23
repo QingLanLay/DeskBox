@@ -16,7 +16,7 @@ internal sealed class HiddenMessageWindowGuard : IDisposable
     internal HiddenMessageWindowGuard(IntPtr window)
     {
         _window = window;
-        _callback = WindowProc;
+        _callback = CallbackDepth.WrapSubclassProc(WindowProc);
         _installed = Win32Helper.SetWindowSubclass(window, _callback, SubclassId, UIntPtr.Zero);
         int style = Win32Helper.GetWindowLong(window, Win32Helper.GWL_STYLE);
         _ = Win32Helper.SetWindowLong(window, Win32Helper.GWL_STYLE,

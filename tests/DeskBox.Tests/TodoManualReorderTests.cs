@@ -94,6 +94,52 @@ public sealed class TodoManualReorderTests
             StringComparison.Ordinal);
     }
 
+    [Fact]
+    public void TodoColorFilterChips_UseOnlyManualDragInitiation()
+    {
+        string[] chipLines = File.ReadAllLines(TestPaths.FromRepository(
+            "src/DeskBox/Controls/WidgetContents/TodoWidgetContent.xaml"))
+            .Where(line => line.Contains("ColorFilterButton", StringComparison.Ordinal))
+            .ToArray();
+        string dragDrop = File.ReadAllText(TestPaths.FromRepository(
+            "src/DeskBox/Controls/WidgetContents/TodoWidgetContent.DragDrop.cs"));
+
+        // native CanDrag 手势初始化与 PointerMoved 里的手工 StartDragAsync 叠加
+        // 会在拖拽管线内部抛 0x8000FFFF 杀进程（#528/#565）：色点只准手工路径。
+        Assert.NotEmpty(chipLines);
+        Assert.DoesNotContain(
+            "CanDrag=\"True\"",
+            string.Join(Environment.NewLine, chipLines),
+            StringComparison.Ordinal);
+        Assert.Contains("StartDragAsync", dragDrop, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void TodoColorMarkerDrag_UsesInProcessMarkerWithDeferredSave()
+    {
+        string dragDrop = File.ReadAllText(TestPaths.FromRepository(
+            "src/DeskBox/Controls/WidgetContents/TodoWidgetContent.DragDrop.cs"));
+        string dragData = File.ReadAllText(TestPaths.FromRepository(
+            "src/DeskBox/Services/DeskBoxDragData.cs"));
+
+        // 颜色是进程内状态：走 _draggedColorMarker 字段同步取用，不再经 OLE
+        // 自定义格式异步读（Drop 处理器里无 deferral 的 await 曾致丢/挂，
+        // 拖过桌面还会被 shell 逐格式探测）。
+        Assert.Contains("_draggedColorMarker", dragDrop, StringComparison.Ordinal);
+        Assert.DoesNotContain(
+            "TodoColorMarkerFormat",
+            dragDrop + dragData,
+            StringComparison.Ordinal);
+        Assert.DoesNotContain(
+            "SetTodoColorMarker",
+            dragDrop + dragData,
+            StringComparison.Ordinal);
+        // Drop 里的存盘 await 必须持 deferral，且存盘异常不得逃出 async void。
+        Assert.Contains("await ViewModel.SetColorMarkerAsync(", dragDrop, StringComparison.Ordinal);
+        Assert.Contains("var deferral = e.GetDeferral();", dragDrop, StringComparison.Ordinal);
+        Assert.Contains("deferral.Complete();", dragDrop, StringComparison.Ordinal);
+    }
+
     private static TodoItemViewModel CreateItem(string id)
     {
         return new TodoItemViewModel(new TodoItem

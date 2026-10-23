@@ -201,6 +201,14 @@ public sealed partial class FileSurfaceContent
         // suppresses that late commit at the source, which a scheduled clear
         // alone cannot outrun on fast dispatch paths.
         RegisterOpenedItemSelectionSuppression(item);
+        // 447/468: an Explorer-hosted launch lifts the SHELLDLL_DefView owner
+        // band while the target application starts, which can float a pinned
+        // widget group above that application. Recheck the bedding once the
+        // launched window has had time to settle; the check is itself a
+        // no-op when the group never leaked.
+        App.Current?.WidgetManager?.QueueDesktopPinnedBeddingRecheck(
+            "file-open-dispatched",
+            TimeSpan.FromMilliseconds(600));
         DispatcherQueue.TryEnqueue(
             Microsoft.UI.Dispatching.DispatcherQueuePriority.Low,
             () =>
@@ -321,6 +329,14 @@ public sealed partial class FileSurfaceContent
         if (!_isDisposed && sender is FileItemSurface surface)
         {
             ApplyOpeningStateToSurface(surface);
+            // A recycled container can strand the expansion suppression: the
+            // hidden label would stay hidden on whichever item inherits it.
+            // Collapse the expansion so the recycled surface starts clean.
+            if (_nameExpansionNameText is { } hiddenLabel &&
+                ReferenceEquals(hiddenLabel, surface.ItemNameText))
+            {
+                HideAllNameExpansions();
+            }
         }
     }
 

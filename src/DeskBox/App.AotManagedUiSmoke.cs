@@ -1063,9 +1063,9 @@ public partial class App
             .ToList();
         RequireAotManagedUi(
             result,
-            localeDiagnostics.Count == 12 &&
+            localeDiagnostics.Count == 13 &&
             localeDiagnostics.Select(locale => locale.Locale).Distinct(
-                StringComparer.Ordinal).Count() == 12 &&
+                StringComparer.Ordinal).Count() == 13 &&
             localeDiagnostics.All(locale =>
                 locale.ResourceCount > 0 &&
                 locale.HasSettingsTitle &&

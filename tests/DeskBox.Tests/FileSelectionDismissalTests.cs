@@ -5,6 +5,17 @@ namespace DeskBox.Tests;
 
 public sealed class FileSelectionDismissalTests
 {
+    [Theory]
+    [InlineData(0u, 20u, false, false)]
+    [InlineData(20u, 20u, false, false)]
+    [InlineData(30u, 20u, true, false)]
+    [InlineData(30u, 20u, false, true)]
+    public void OutsideClick_PreservesSelectionsInsideOwnedProxyMenus(
+        uint target, uint application, bool menuProxy, bool expected)
+    {
+        Assert.Equal(expected, FileSelectionDismissalPolicy.IsOutsideTargetProcess(target, application, menuProxy));
+    }
+
     [Fact]
     public void FileItemFocusCues_HaveOneOwnerAndKeepKeyboardFocusVisible()
     {

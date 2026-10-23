@@ -108,7 +108,7 @@ public sealed partial class SettingsWindow
         {
             XamlRoot = SettingsRoot.XamlRoot,
             Title = _localizationService.T("Settings.QuickCapture.ImageCacheCleanupTitle"),
-            CloseButtonText = _localizationService.T("Common.Ok"),
+            CloseButtonText = _localizationService.T("Common.GotIt"),
             DefaultButton = ContentDialogButton.Close,
             Content = new TextBlock
             {
@@ -351,7 +351,9 @@ public sealed partial class SettingsWindow
 
         try
         {
-            await App.Current.WidgetManager.DeleteOrphanManagedStorageFolderAsync(folderPath);
+            await App.Current.WidgetManager.DeleteOrphanManagedStorageFolderAsync(
+                folderPath,
+                _hWnd);
             RefreshManagedStorageFolderList();
             await ShowInfoDialogAsync(
                 _localizationService.T("Settings.ManagedStorage.DeleteCompleteTitle"),
@@ -396,7 +398,7 @@ public sealed partial class SettingsWindow
         {
             XamlRoot = SettingsRoot.XamlRoot,
             Title = title,
-            CloseButtonText = _localizationService.T("Common.Ok"),
+            CloseButtonText = _localizationService.T("Common.GotIt"),
             DefaultButton = ContentDialogButton.Close,
             Content = new TextBlock
             {

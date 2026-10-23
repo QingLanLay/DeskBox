@@ -619,6 +619,9 @@ public sealed class DeskBoxDataBackupServiceTests : IDisposable
         var targetService = new DeskBoxDataBackupService(_appDataRoot);
 
         DeskBoxRestorePreparation preparation = await targetService.PrepareRestoreAsync(backupPath);
+        // The settings flow confirms the restore after the dialog before
+        // the relaunch that applies it.
+        Assert.True(await targetService.ConfirmPendingFullRestoreAsync());
         DeskBoxRestoreApplyResult result = await targetService.ApplyPendingRestoreAsync();
 
         Assert.True(preparation.FileCount >= 3);
@@ -626,6 +629,11 @@ public sealed class DeskBoxDataBackupServiceTests : IDisposable
         Assert.True(preparation.HasIntegrityManifest);
         Assert.True(result.HadPendingRestore);
         Assert.True(result.Succeeded, result.ErrorMessage);
+        // The post-restore recovery pass keys off these: a full restore is
+        // the only kind that re-registers startup and rebases profile-local
+        // paths, and the manifest's source data path is its rebase anchor.
+        Assert.Equal(DeskBoxRestoreApplyKind.Full, result.Kind);
+        Assert.Equal(Path.GetFullPath(sourceData), result.SourceDataPath, ignoreCase: true);
         Assert.False(File.Exists(targetService.PendingRestoreMarkerPath));
         string restoredAttachment = Path.Combine(
             targetData,
@@ -1034,6 +1042,7 @@ public sealed class DeskBoxDataBackupServiceTests : IDisposable
 
         Assert.True(File.Exists(service.PendingRestoreMarkerPath));
 
+        Assert.True(await service.ConfirmPendingFullRestoreAsync());
         DeskBoxRestoreApplyResult applied = await service.ApplyPendingRestoreAsync();
         Assert.True(applied.Succeeded);
         Assert.True(File.Exists(Path.Combine(_appDataRoot, "data", "surviving-note.txt")));
@@ -1057,6 +1066,7 @@ public sealed class DeskBoxDataBackupServiceTests : IDisposable
         await File.WriteAllTextAsync(Path.Combine(currentData, "sync", "state.json"), "{}");
         var service = new DeskBoxDataBackupService(_appDataRoot);
         await service.PrepareRestoreAsync(archivePath);
+        Assert.True(await service.ConfirmPendingFullRestoreAsync());
 
         DeskBoxRestoreApplyResult result = await service.ApplyPendingRestoreAsync();
 
@@ -1185,6 +1195,7 @@ public sealed class DeskBoxDataBackupServiceTests : IDisposable
         await File.WriteAllTextAsync(currentSettingsPath, "{\"theme\":\"Light\"}");
         var service = new DeskBoxDataBackupService(_appDataRoot);
         await service.PrepareRestoreAsync(archivePath);
+        Assert.True(await service.ConfirmPendingFullRestoreAsync());
         using JsonDocument marker = JsonDocument.Parse(await File.ReadAllTextAsync(service.PendingRestoreMarkerPath));
         string stagingRoot = marker.RootElement.GetProperty("stagingRoot").GetString()!;
         await File.WriteAllTextAsync(Path.Combine(stagingRoot, "data", "settings.json"), "{ invalid json");
@@ -1193,6 +1204,35 @@ public sealed class DeskBoxDataBackupServiceTests : IDisposable
 
         Assert.True(result.HadPendingRestore);
         Assert.False(result.Succeeded);
+        Assert.False(File.Exists(service.PendingRestoreMarkerPath));
+        Assert.Contains("Light", await File.ReadAllTextAsync(currentSettingsPath));
+    }
+
+    [Fact]
+    public async Task ApplyPendingRestoreAsync_UnconfirmedFullRestore_IsDiscardedAndKeepsCurrentData()
+    {
+        // The pending marker is written BEFORE the confirmation dialog opens.
+        // A crash, hidden settings window, or exit while that dialog is up
+        // must never let the next launch swap the whole data directory.
+        string sourceRoot = Directory.CreateDirectory(Path.Combine(_tempRoot, "unconfirmed-source")).FullName;
+        string sourceData = Directory.CreateDirectory(Path.Combine(sourceRoot, "data")).FullName;
+        await File.WriteAllTextAsync(Path.Combine(sourceData, "settings.json"), "{\"theme\":\"Dark\"}");
+        string archivePath = await new DeskBoxDataBackupService(sourceRoot).ExportBackupAsync(_exportRoot);
+
+        string currentData = Directory.CreateDirectory(Path.Combine(_appDataRoot, "data")).FullName;
+        string currentSettingsPath = Path.Combine(currentData, "settings.json");
+        await File.WriteAllTextAsync(currentSettingsPath, "{\"theme\":\"Light\"}");
+        var service = new DeskBoxDataBackupService(_appDataRoot);
+        await service.PrepareRestoreAsync(archivePath);
+        Assert.True(File.Exists(service.PendingRestoreMarkerPath));
+
+        // No ConfirmPendingFullRestoreAsync(): simulates the dialog never
+        // being answered. A marker written by an older version is
+        // byte-identical here (the field is omitted while false), so this
+        // also covers legacy markers.
+        DeskBoxRestoreApplyResult result = await service.ApplyPendingRestoreAsync();
+
+        Assert.Equal(DeskBoxRestoreApplyResult.NoPendingRestore, result);
         Assert.False(File.Exists(service.PendingRestoreMarkerPath));
         Assert.Contains("Light", await File.ReadAllTextAsync(currentSettingsPath));
     }

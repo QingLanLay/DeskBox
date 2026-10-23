@@ -13,7 +13,7 @@ public sealed class JsonSerializationBaselineContractTests : IDisposable
         Guid.NewGuid().ToString("N"));
 
     [Fact]
-    public void ProductionInventory_IsFrozenAtThirtyEightFilesAndNinetyCalls()
+    public void ProductionInventory_IsFrozenAtFortyOneFilesAndNinetyFiveCalls()
     {
         var expected = new Dictionary<string, int>(StringComparer.Ordinal)
         {
@@ -44,9 +44,15 @@ public sealed class JsonSerializationBaselineContractTests : IDisposable
             ["src/DeskBox/Services/ManagedStorageMigrationService.cs"] = 2,
             ["src/DeskBox/Services/NativeNotificationActivationEnvelopeStore.cs"] = 2,
             ["src/DeskBox/Services/QuickCaptureStore.cs"] = 2,
+            // 2: the wipe-recovery offer marker (read deserialize, atomic save serialize).
+            ["src/DeskBox/Services/RecoveryOfferStore.cs"] = 2,
             ["src/DeskBox/Services/SearchHistoryService.cs"] = 2,
             ["src/DeskBox/Services/SettingsMigrationService.cs"] = 2,
             ["src/DeskBox/Services/SettingsService.cs"] = 3,
+            // Startup session ledger: read-previous + write-current breadcrumb.
+            ["src/DeskBox/Services/StartupSessionLedger.cs"] = 2,
+            // Crash event report serialization for the support package.
+            ["src/DeskBox/Services/WindowsCrashEventCollector.cs"] = 1,
             ["src/DeskBox/Services/SyncOutboxStore.cs"] = 2,
             ["src/DeskBox/Services/SyncRevisionsStore.cs"] = 2,
             ["src/DeskBox/Services/SyncStateStore.cs"] = 2,
@@ -76,8 +82,8 @@ public sealed class JsonSerializationBaselineContractTests : IDisposable
             Assert.Equal(expectedCount, actual[path]);
         }
 
-        Assert.Equal(38, actual.Count);
-        Assert.Equal(90, actual.Values.Sum());
+        Assert.Equal(41, actual.Count);
+        Assert.Equal(95, actual.Values.Sum());
 
         string[] expectedContextOwners =
         [
@@ -105,8 +111,10 @@ public sealed class JsonSerializationBaselineContractTests : IDisposable
             "src/DeskBox/Services/ManagedStorageMigrationModels.cs",
             "src/DeskBox/Services/NativeNotificationActivationEnvelopeStore.cs",
             "src/DeskBox/Services/QuickCaptureStore.cs",
+            "src/DeskBox/Services/RecoveryOfferStore.cs",
             "src/DeskBox/Services/SearchHistoryService.cs",
             "src/DeskBox/Services/SettingsService.cs",
+            "src/DeskBox/Services/StartupSessionLedger.cs",
             "src/DeskBox/Services/SyncRevisionsStore.cs",
             "src/DeskBox/Services/SyncStateStore.cs",
             "src/DeskBox/Services/TodoWidgetStore.cs",
@@ -114,6 +122,7 @@ public sealed class JsonSerializationBaselineContractTests : IDisposable
             "src/DeskBox/Services/WidgetFileStackSettings.cs",
             "src/DeskBox/Services/WidgetLayoutStore.cs",
             "src/DeskBox/Services/WidgetTitleIconAssetStore.cs",
+            "src/DeskBox/Services/WindowsCrashEventCollector.cs",
             "src/DeskBox/Sync/SyncJsonContext.cs"
         ];
         string[] actualContextOwners = ProductionSourceFiles()
@@ -124,7 +133,7 @@ public sealed class JsonSerializationBaselineContractTests : IDisposable
             .Order()
             .ToArray();
 
-        Assert.Equal(34, actualContextOwners.Length);
+        Assert.Equal(37, actualContextOwners.Length);
         Assert.Equal(expectedContextOwners, actualContextOwners);
     }
 
@@ -461,13 +470,14 @@ public sealed class JsonSerializationBaselineContractTests : IDisposable
             backup.ReplaceLineEndings("\r\n"),
             StringComparison.Ordinal);
 
-        // Five call sites: classic prepare + scoped cloud prepare + the
+        // Six call sites: classic prepare + scoped cloud prepare + the
         // pre-restore safety backup pin + the confirm-dialog item-merge
-        // mode update + the scoped-restore attempt-count persistence
-        // (part of the bounded-retry abandon cap). All must still go
-        // through the same atomic-write helper.
+        // mode update + the full-restore confirmation update + the
+        // scoped-restore attempt-count persistence (part of the
+        // bounded-retry abandon cap). All must still go through the same
+        // atomic-write helper.
         Assert.Equal(
-            5,
+            6,
             Regex.Matches(
                 backup,
                 @"await\s+WritePendingRestoreMarkerAtomicallyAsync\s*\(").Cast<Match>().Count());

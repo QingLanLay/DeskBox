@@ -79,7 +79,7 @@ public abstract partial class WidgetWindowBase : Window
     protected bool IsResizing;
     protected bool IsApplyingBounds;
     protected string ResizeDirection = string.Empty;
-    protected Win32Helper.POINT InitialCursorPt;
+    protected Win32Helper.POINT InitialPointerPt;
     protected PointInt32 InitialWindowPos;
     protected SizeInt32 InitialWindowSize;
     protected FrameworkElement? DragCaptureElement;
@@ -143,6 +143,9 @@ public abstract partial class WidgetWindowBase : Window
     public bool IsRaisedAboveDesktopLayer =>
         !IsAtDesktopLayer || _isRaisedForExpandedState;
 
+    /// <summary>True while a title-bar drag has actually moved the window.</summary>
+    public bool IsTitleBarDragTransitionActive => IsDragging && HasMovedTitleBarDrag;
+
     /// <summary>The opacity value (0–1) used for backdrop tinting.</summary>
     protected abstract double WidgetOpacity { get; }
 
@@ -200,6 +203,15 @@ public abstract partial class WidgetWindowBase : Window
     /// <summary>Extra guards that block RestoreDesktopLayer (e.g. open flyouts).</summary>
     protected virtual bool HasBlockingFlyoutOpen()
     {
+        // The native Shell context menu lives in the proxy process, so no XAML
+        // popup ever exists for it. Without this guard an expanded capsule
+        // auto-collapses while the user browses a menu that extends past the
+        // expanded bounds (the pointer reads as outside the window).
+        if (ShellContextMenuProxy.IsMenuRoundInFlight)
+        {
+            return true;
+        }
+
         XamlRoot? xamlRoot = RootElement.XamlRoot;
         return xamlRoot is not null &&
             VisualTreeHelper.GetOpenPopupsForXamlRoot(xamlRoot).Count > 0;

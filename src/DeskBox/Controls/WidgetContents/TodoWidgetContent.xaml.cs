@@ -48,6 +48,10 @@ public sealed partial class TodoWidgetContent : UserControl
     private Button? _pressedColorFilterButton;
     private bool _isStartingColorFilterDrag;
     private bool _colorFilterHandledEventsRegistered;
+    // 色点拖拽的进程内载荷：DragStarting 置、Drop 应用时取走、源侧 finally 兜底清。
+    // 实例字段依赖待办格子单实例（WidgetManager.CreateSingletonContentFeatureWidgetAsync
+    // 存在即复用）；若未来允许多实例，跨格标色会退化为无操作（不崩不脏），届时改 static。
+    private string? _draggedColorMarker;
     private bool _isResponsiveLayoutTransitionActive;
     private bool _isInteractiveResizeActive;
     private bool _segmentedLayoutRefreshPending;
@@ -546,7 +550,7 @@ public sealed partial class TodoWidgetContent : UserControl
         CustomDueDateTitleText.Text = localization.T("Todo.Due.Custom");
         CustomDueDatePicker.PlaceholderText = localization.T("Todo.Due.Custom");
         CustomDueDateCancelButton.Content = localization.T("Common.Cancel");
-        CustomDueDateSaveButton.Content = localization.T("Common.Ok");
+        CustomDueDateSaveButton.Content = localization.T("Common.Save");
     }
 
     public void OpenAddEditor() => _ = OpenAddEditorAsync();

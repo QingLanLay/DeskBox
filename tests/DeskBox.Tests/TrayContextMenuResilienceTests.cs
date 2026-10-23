@@ -127,7 +127,10 @@ public sealed class TrayContextMenuResilienceTests
             "[Tray] Tray context menu degraded to native PopupMenu mode (SecondWindow host failed to initialize)",
             degrade,
             StringComparison.Ordinal);
-        // Degrading immediately shows the native menu for the same right-click.
+        // Degrading shows the native menu within the deferred open turn for
+        // the same right-click (the whole open was moved one dispatcher turn
+        // off the tray WndProc frame by the callback-isolation batch; the
+        // degrade path itself stays inside that turn).
         Assert.Contains("ShowTrayContextMenuInNativeMode(point);", degrade, StringComparison.Ordinal);
 
         // The degrade path must switch the mode property so the library's own

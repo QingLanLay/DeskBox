@@ -419,9 +419,9 @@ function Assert-MusicVolumeMutationResult {
     if ($AllowExpectedFailure.IsPresent) {
         if ($result.state -ne "Failed" -or
             [bool]$result.success -or
-            -not ([string]$result.error).Contains(
+            -not (([string]$result.error).IndexOf(
                 "intentional-after-system-volume-change",
-                [StringComparison]::Ordinal)) {
+                [StringComparison]::Ordinal) -ge 0)) {
             throw "AOT music-volume $($Run.Phase) did not produce the expected failure."
         }
     }

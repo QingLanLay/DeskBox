@@ -315,6 +315,15 @@ public sealed class DesktopDoubleClickActivationService : IDisposable, IHookHeal
         IntPtr installedHook = IntPtr.Zero;
         try
         {
+            // Low-level hook callbacks are delivered as a message to this
+            // thread; whenever it is not scheduled in time
+            // (LowLevelHooksTimeout, capped at 1000ms by the system) Windows
+            // silently removes the hook. AboveNormal keeps this pump ahead of
+            // ordinary work under transient CPU pressure without starving
+            // time-critical system work — feedback 445/450/502 showed the
+            // default Normal priority being starved often enough to lose the
+            // hook dozens of times per day.
+            Thread.CurrentThread.Priority = ThreadPriority.AboveNormal;
             lock (_sync)
             {
                 if (_disposed || generation != _lifecycleGeneration)
@@ -557,7 +566,8 @@ public sealed class DesktopDoubleClickActivationService : IDisposable, IHookHeal
         }
 
         Win32Helper.GetWindowThreadProcessId(target, out uint processId);
-        if (processId == 0 || processId == (uint)Environment.ProcessId)
+        if (!FileSelectionDismissalPolicy.IsOutsideTargetProcess(
+                processId, (uint)Environment.ProcessId, ShellContextMenuProxy.IsMenuProcess(processId)))
         {
             return;
         }

@@ -54,6 +54,7 @@ public partial class App
                     paths,
                     expectedDestinationNames: [],
                     expectedHistoryItemCounts: [],
+                    expectedHistoryFailed: [],
                     "ShellMoveOwnedBaselineVerified");
                 evidence.Operations = await MoveAotShellItemsThroughMenusAsync(
                     result,
@@ -68,7 +69,8 @@ public partial class App
                     evidence.After,
                     paths,
                     ShellMoveMutatedDestinationNames(paths),
-                    [1, 0, 1, 1],
+                    [1, 1, 1],
+                    [true, false, false],
                     "ShellMoveMutationApplied");
                 break;
 
@@ -82,7 +84,8 @@ public partial class App
                     evidence.Before,
                     paths,
                     ShellMoveMutatedDestinationNames(paths),
-                    [1, 0, 1, 1],
+                    [1, 1, 1],
+                    [true, false, false],
                     "ShellMoveRestartMutationVerified");
                 evidence.Operations = await RestoreAotShellMoveBaselineAsync(
                     result,
@@ -98,6 +101,7 @@ public partial class App
                     paths,
                     expectedDestinationNames: [],
                     expectedHistoryItemCounts: [],
+                    expectedHistoryFailed: [],
                     "ShellMoveBaselineRestored");
                 break;
 
@@ -112,6 +116,7 @@ public partial class App
                     paths,
                     expectedDestinationNames: [],
                     expectedHistoryItemCounts: [],
+                    expectedHistoryFailed: [],
                     "ShellMovePostflightVerified");
                 evidence.After = evidence.Before;
                 break;
@@ -132,6 +137,7 @@ public partial class App
                     paths,
                     expectedDestinationNames: [],
                     expectedHistoryItemCounts: [],
+                    expectedHistoryFailed: [],
                     "ShellMoveCompensationCompleted");
                 break;
 
@@ -196,28 +202,28 @@ public partial class App
                 [Path.GetFileNameWithoutExtension(paths.LateName)],
                 expectMultiSelection: false);
         menus.Add(MapAotShellMoveMenu(late));
-        IReadOnlyList<AotShellMoveInvocationSnapshot> pendingInvocations =
-            AotShellMoveFixture.CaptureInvocations();
-        AotShellMoveInvocationSnapshot pendingLate = pendingInvocations.Single(
-            invocation => invocation.Mode == AotShellMoveFixture.LateMode);
-        bool lateTaskPendingWhenProductReturned =
-            pendingLate.FileServiceOutcome ==
-                AotShellMoveFixture.RecoveredPendingOutcome &&
-            pendingLate.CompletedCountAtProductReturn == 1 &&
-            !pendingLate.NativeTaskReturned;
+        // Late = watchdog-abandoned-but-completed: the product reports the
+        // failure (action-error route), the file is on disk, and the widget
+        // reconciles to the truth through the watcher path.
         await host.Surface.WaitForAotLocalFileSurfaceAsync(
             paths.WidgetRoot,
             ShellMoveMutatedSourceNames(paths),
             expectAtMappedRoot: true);
-        await AotShellMoveFixture.WaitForLateTaskReturnAsync();
 
         IReadOnlyList<AotShellMoveInvocationSnapshot> invocations =
             AotShellMoveFixture.CaptureInvocations();
+        bool abandonedButFilesystemCompleted =
+            invocations.SingleOrDefault(invocation =>
+                invocation.Mode == AotShellMoveFixture.LateMode) is
+                { } lateInvocation &&
+            lateInvocation.FileServiceOutcome ==
+                AotShellMoveFixture.AbandonedButCompletedOutcome &&
+            lateInvocation.CompletedCountAtProductReturn == 1;
         bool valid =
-            IsValidAotShellMoveMenu(real, 1, "Success", host.WindowHandle) &&
-            IsValidAotShellMoveMenu(partial, 2, "Success", host.WindowHandle) &&
-            IsValidAotShellMoveMenu(cancel, 1, "Info", host.WindowHandle) &&
-            IsValidAotShellMoveMenu(late, 1, "Success", host.WindowHandle) &&
+            IsValidAotShellMoveMenu(real, 1, "Success", "file-move-desktop", host.WindowHandle) &&
+            IsValidAotShellMoveMenu(partial, 2, "Success", "file-move-desktop", host.WindowHandle) &&
+            IsValidAotShellMoveMenu(cancel, 1, "Info", "file-move-desktop", host.WindowHandle) &&
+            IsValidAotShellMoveMenu(late, 1, "Error", "file-action-error", host.WindowHandle) &&
             invocations.Count == 4 &&
             invocations.Select(invocation => invocation.Mode).SequenceEqual(
                 [
@@ -258,10 +264,8 @@ public partial class App
                 completedCount: 1,
                 actualShell: false,
                 simulatedAbort: false,
-                AotShellMoveFixture.RecoveredPendingOutcome) &&
-            lateTaskPendingWhenProductReturned &&
-            invocations[3].ProductReturnedAtUtc <
-                invocations[3].NativeTaskReturnedAtUtc;
+                AotShellMoveFixture.AbandonedButCompletedOutcome) &&
+            abandonedButFilesystemCompleted;
         RequireAotManagedUi(
             result,
             valid,
@@ -273,7 +277,7 @@ public partial class App
             Menus = menus,
             Invocations = invocations.ToList(),
             ProductMenuPathCompleted = true,
-            LateTaskPendingWhenProductReturned = lateTaskPendingWhenProductReturned
+            AbandonedButCompleted = abandonedButFilesystemCompleted
         };
     }
 
@@ -297,6 +301,7 @@ public partial class App
         AotShellMoveMenuInvocationSnapshot menu,
         int expectedSelectionCount,
         string expectedSeverity,
+        string expectedFeedbackKey,
         long expectedWindowHandle) =>
         menu.SelectedNames.Count == expectedSelectionCount &&
         menu.SelectedPaths.Count == expectedSelectionCount &&
@@ -308,7 +313,7 @@ public partial class App
         !string.IsNullOrWhiteSpace(menu.MoveText) &&
         menu.MoveEnabled &&
         menu.AutomationInvoked &&
-        menu.FeedbackKey == "file-move-desktop" &&
+        menu.FeedbackKey == expectedFeedbackKey &&
         menu.FeedbackSeverity == expectedSeverity &&
         !string.IsNullOrWhiteSpace(menu.FeedbackMessage) &&
         menu.Items.Count == menu.MenuItemCount &&
@@ -479,6 +484,7 @@ public partial class App
         AotShellMoveFixturePaths paths,
         IReadOnlyCollection<string> expectedDestinationNames,
         IReadOnlyList<int> expectedHistoryItemCounts,
+        IReadOnlyList<bool> expectedHistoryFailed,
         string step)
     {
         string[] expectedSourceNames = paths.OwnedFiles
@@ -536,21 +542,32 @@ public partial class App
             state.History.Count == expectedHistoryItemCounts.Count &&
             state.History.Select(history => history.ItemCount).SequenceEqual(
                 expectedHistoryItemCounts) &&
+            state.History.Select(history => history.IsFailed).SequenceEqual(
+                expectedHistoryFailed) &&
             state.History.All(history =>
                 history.WidgetId == AotShellMoveFixture.OwnedWidgetId &&
                 history.ActionType == OrganizationActionType.MoveBackToDesktop &&
                 history.TransferMode == "Move" &&
-                history.CanUndo &&
+                (history.IsFailed
+                    ? !history.CanUndo
+                    : history.CanUndo) &&
                 !history.IsUndone &&
-                !history.IsFailed &&
                 history.SourcePaths.All(path =>
                     AotLocalFileSurfaceFixture.IsPathEqualOrInside(
                         paths.WidgetRoot,
                         path)) &&
-                history.DestinationPaths.All(path =>
-                    AotLocalFileSurfaceFixture.IsPathEqualOrInside(
-                        paths.DesktopRoot,
-                        path)));
+                // A failed entry carries no CONFIRMED destination — the
+                // failure writer has no destination to report (a physically
+                // completed item rides the exception into the undoable
+                // success entry instead, and the disk-level assertions pin
+                // that landing separately); a successful entry's
+                // destinations must sit inside the owned desktop root.
+                (history.IsFailed
+                    ? history.DestinationPaths.All(string.IsNullOrEmpty)
+                    : history.DestinationPaths.All(path =>
+                        AotLocalFileSurfaceFixture.IsPathEqualOrInside(
+                            paths.DesktopRoot,
+                            path))));
 
         RequireAotManagedUi(
             result,
@@ -688,7 +705,7 @@ internal sealed class AotManagedUiShellMoveOperationsEvidence
     public List<AotManagedUiShellMoveMenuEvidence> Menus { get; set; } = [];
     public List<AotShellMoveInvocationSnapshot> Invocations { get; set; } = [];
     public bool ProductMenuPathCompleted { get; set; }
-    public bool LateTaskPendingWhenProductReturned { get; set; }
+    public bool AbandonedButCompleted { get; set; }
     public bool RestoredByHarness { get; set; }
     public int RestoredFileCount { get; set; }
     public bool Compensation { get; set; }

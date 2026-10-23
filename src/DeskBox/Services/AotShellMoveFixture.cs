@@ -1,4 +1,8 @@
 #if DESKBOX_NATIVE_AOT
+using System.Diagnostics.CodeAnalysis;
+using System.Threading;
+using DeskBox.Helpers;
+
 namespace DeskBox.Services;
 
 internal static class AotShellMoveFixture
@@ -18,8 +22,11 @@ internal static class AotShellMoveFixture
     internal const string CancelMode = "Cancel";
     internal const string LateMode = "Late";
     internal const string ReturnedOutcome = "Returned";
-    internal const string RecoveredPendingOutcome = "RecoveredPending";
-    internal const string ExtendedWaitOutcome = "ExtendedWait";
+    /// <summary>The watchdog declared the engine dead while the filesystem
+    /// part had already completed — the modern engine's persistence
+    /// scenario (the retired legacy bridge's "late return" equivalent).
+    /// </summary>
+    internal const string AbandonedButCompletedOutcome = "AbandonedButCompleted";
 
     private static readonly object s_sync = new();
     private static readonly List<AotShellMoveInvocationState> s_invocations = [];
@@ -123,29 +130,20 @@ internal static class AotShellMoveFixture
             Path.Combine(desktopRoot, lateName));
     }
 
-    internal static TimeSpan GetRecoveryProbeDelay(
-        IReadOnlyList<FileService.FileTransferPlan> plans,
-        TimeSpan productionDelay)
-    {
-        if (!IsExactScenario())
-        {
-            return productionDelay;
-        }
-
-        AotShellMoveFixturePaths paths = GetOwnedPaths(
-            DeskBoxDataPathService.Current);
-        string mode = ValidateAndResolveMode(paths, plans, requireMutatePhase: true);
-        return string.Equals(mode, LateMode, StringComparison.Ordinal)
-            ? TimeSpan.FromMilliseconds(150)
-            : productionDelay;
-    }
-
-    internal static bool TryExecute(
+    /// <summary>
+    /// Entry hook for the modern Shell engine: records the invocation for
+    /// every owned transfer and, for the simulated persistence modes,
+    /// performs the mode's own filesystem part. Returns true when the
+    /// harness owns this transfer; <paramref name="proceedWithRealEngine"/>
+    /// tells the engine whether the real Shell operation path should still
+    /// run (Real mode) or the simulated outcome will be thrown instead.
+    /// </summary>
+    internal static bool TryCaptureModernTransfer(
         IReadOnlyList<FileService.FileTransferPlan> plans,
         IntPtr ownerWindowHandle,
-        Action executeRealShellMove)
+        out bool proceedWithRealEngine)
     {
-        ArgumentNullException.ThrowIfNull(executeRealShellMove);
+        proceedWithRealEngine = false;
         if (!IsExactScenario())
         {
             return false;
@@ -170,92 +168,142 @@ internal static class AotShellMoveFixture
             PlannedCount = plans.Count,
             StartedAtUtc = DateTimeOffset.UtcNow
         };
+
+        switch (mode)
+        {
+            case RealMode:
+                state.ActualShellOperation = true;
+                proceedWithRealEngine = true;
+                break;
+
+            case PartialMode:
+                MoveExactFile(
+                    paths.PartialFirstSourcePath,
+                    paths.PartialFirstDestinationPath);
+                state.SimulatedOperationsAborted = true;
+                state.FilesystemCompletedAtUtc = DateTimeOffset.UtcNow;
+                break;
+
+            case CancelMode:
+                state.SimulatedOperationsAborted = true;
+                break;
+
+            case LateMode:
+                // The watchdog-abandoned scenario: the filesystem part is
+                // already complete when the engine is declared dead.
+                MoveExactFile(paths.LateSourcePath, paths.LateDestinationPath);
+                state.FilesystemCompletedAtUtc = DateTimeOffset.UtcNow;
+                break;
+
+            default:
+                throw new InvalidOperationException(
+                    $"Unsupported owned Shell move mode '{mode}'.");
+        }
+
         lock (s_sync)
         {
             s_invocations.Add(state);
         }
 
-        try
-        {
-            switch (mode)
-            {
-                case RealMode:
-                    state.ActualShellOperation = true;
-                    executeRealShellMove();
-                    break;
-
-                case PartialMode:
-                    MoveExactFile(
-                        paths.PartialFirstSourcePath,
-                        paths.PartialFirstDestinationPath);
-                    state.SimulatedOperationsAborted = true;
-                    state.FilesystemCompletedAtUtc = DateTimeOffset.UtcNow;
-                    break;
-
-                case CancelMode:
-                    state.SimulatedOperationsAborted = true;
-                    break;
-
-                case LateMode:
-                    MoveExactFile(paths.LateSourcePath, paths.LateDestinationPath);
-                    state.FilesystemCompletedAtUtc = DateTimeOffset.UtcNow;
-                    Thread.Sleep(800);
-                    break;
-
-                default:
-                    throw new InvalidOperationException(
-                        $"Unsupported owned Shell move mode '{mode}'.");
-            }
-        }
-        finally
-        {
-            state.CompletedCount = plans.Count(plan =>
-                FileService.IsCompletedShellMove(
-                    plan.SourcePath,
-                    plan.DestinationPath));
-            state.FilesystemCompletedAtUtc ??= state.CompletedCount > 0
-                ? DateTimeOffset.UtcNow
-                : null;
-            state.NativeTaskReturned = true;
-            state.NativeTaskReturnedAtUtc = DateTimeOffset.UtcNow;
-        }
-
         return true;
     }
 
-    internal static void RecordFileServiceOutcome(
+    /// <summary>
+    /// Throws the simulated mode's outcome through the modern engine's own
+    /// typed exceptions so the product's cancel adapter, failure reporting
+    /// and persistence reconciliation are exercised exactly as they would
+    /// be for a real partial cancel or watchdog abandonment.
+    /// </summary>
+    [DoesNotReturn]
+    internal static void ThrowSimulatedModernOutcome(
+        IReadOnlyList<FileService.FileTransferPlan> plans)
+    {
+        AotShellMoveInvocationState state = RequireLatestInvocation(plans);
+        state.CompletedCount = plans.Count(plan =>
+            FileService.IsCompletedShellMove(
+                plan.SourcePath,
+                plan.DestinationPath));
+        state.CompletedCountAtProductReturn = state.CompletedCount;
+        state.NativeTaskReturned = true;
+        state.NativeTaskReturnedAtUtc = DateTimeOffset.UtcNow;
+        state.ProductReturnedAtUtc = DateTimeOffset.UtcNow;
+
+        if (state.Mode == PartialMode || state.Mode == CancelMode)
+        {
+            // The view model's cancel adapter turns the completed set into
+            // the same partial-count feedback the legacy bridge produced.
+            state.FileServiceOutcome = ReturnedOutcome;
+            throw new FileService.FileTransferCanceledException(
+                plans
+                    .Where(plan => FileService.IsCompletedShellMove(
+                        plan.SourcePath,
+                        plan.DestinationPath))
+                    .Select(plan => new FileService.FileTransferResult(
+                        plan.SourcePath,
+                        plan.DestinationPath))
+                    .ToList(),
+                CancellationToken.None);
+        }
+
+        if (state.Mode == LateMode)
+        {
+            state.FileServiceOutcome = AbandonedButCompletedOutcome;
+            throw new StaOperationAbandonedException(
+                TimeSpan.Zero,
+                TimeSpan.Zero,
+                processAbandonmentCount: 0,
+                workerName: "AotShellMoveFixture simulated abandonment");
+        }
+
+        throw new InvalidOperationException(
+            $"The owned Shell move fixture cannot simulate mode '{state.Mode}'.");
+    }
+
+    /// <summary>
+    /// Completion report for the Real mode: records the returned completed
+    /// count and the Returned outcome at the product's success return
+    /// point.
+    /// </summary>
+    internal static void RecordModernRealCompletion(
         IReadOnlyList<FileService.FileTransferPlan> plans,
-        string outcome)
+        int completedCount)
     {
         if (!IsExactScenario())
         {
             return;
         }
-        if (outcome is not ReturnedOutcome and
-            not RecoveredPendingOutcome and
-            not ExtendedWaitOutcome)
-        {
-            throw new InvalidOperationException(
-                $"Unsupported Shell move product outcome '{outcome}'.");
-        }
 
+        lock (s_sync)
+        {
+            AotShellMoveInvocationState state = RequireLatestInvocation(plans);
+            if (!state.ActualShellOperation)
+            {
+                return;
+            }
+
+            state.CompletedCount = completedCount;
+            state.CompletedCountAtProductReturn = completedCount;
+            state.NativeTaskReturned = true;
+            state.NativeTaskReturnedAtUtc = DateTimeOffset.UtcNow;
+            state.ProductReturnedAtUtc = DateTimeOffset.UtcNow;
+            state.FileServiceOutcome = ReturnedOutcome;
+        }
+    }
+
+    private static AotShellMoveInvocationState RequireLatestInvocation(
+        IReadOnlyList<FileService.FileTransferPlan> plans)
+    {
         string[] sources = plans.Select(plan => plan.SourcePath).ToArray();
         lock (s_sync)
         {
-            AotShellMoveInvocationState state = s_invocations
+            return s_invocations
                 .LastOrDefault(candidate =>
                     candidate.SourcePaths.SequenceEqual(
                         sources,
                         StringComparer.OrdinalIgnoreCase) &&
                     string.IsNullOrEmpty(candidate.FileServiceOutcome)) ??
                 throw new InvalidOperationException(
-                    "The owned Shell move product outcome has no matching invocation.");
-            state.FileServiceOutcome = outcome;
-            state.ProductReturnedAtUtc = DateTimeOffset.UtcNow;
-            state.CompletedCountAtProductReturn = plans.Count(plan =>
-                FileService.IsCompletedShellMove(
-                    plan.SourcePath,
-                    plan.DestinationPath));
+                    "The owned Shell move simulation has no matching invocation.");
         }
     }
 
@@ -268,29 +316,6 @@ internal static class AotShellMoveFixture
                 .Select(state => state.ToSnapshot())
                 .ToArray();
         }
-    }
-
-    internal static async Task WaitForLateTaskReturnAsync()
-    {
-        for (int attempt = 0; attempt < 100; attempt++)
-        {
-            lock (s_sync)
-            {
-                AotShellMoveInvocationState? late = s_invocations.LastOrDefault(
-                    state => string.Equals(
-                        state.Mode,
-                        LateMode,
-                        StringComparison.Ordinal));
-                if (late is not null && late.NativeTaskReturned)
-                {
-                    return;
-                }
-            }
-            await Task.Delay(50);
-        }
-
-        throw new TimeoutException(
-            "The controlled late Shell move task did not eventually return.");
     }
 
     private static string ValidateAndResolveMode(

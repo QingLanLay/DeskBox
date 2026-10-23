@@ -8,10 +8,12 @@ using DeskBox.Platform;
 using DeskBox.Services;
 using DeskBox.ViewModels;
 using Microsoft.UI;
+using Microsoft.UI.Composition;
 using Microsoft.UI.Input;
 using Microsoft.UI.Xaml;
 using Microsoft.UI.Xaml.Controls;
 using Microsoft.UI.Xaml.Controls.Primitives;
+using Microsoft.UI.Xaml.Hosting;
 using Microsoft.UI.Xaml.Input;
 using Microsoft.UI.Xaml.Media;
 using Windows.ApplicationModel.DataTransfer;
@@ -33,6 +35,285 @@ public sealed partial class FileSurfaceContent
     private DataPackageView? _stackDropItemsDataView;
     private int _stackDropItemsTargetMemberCount = -1;
     private WidgetItem[] _stackDropItemsCache = [];
+
+    // Set by ItemSurface_PointerPressed for the same gesture's ItemClick, so
+    // the slow-click rename entry can require the press to land on the label.
+    private bool _lastItemPressOnLabel;
+
+    private bool IsSurfaceDragActive() =>
+        _isSurfaceReorderDragActive || _stackPopoverDragActive;
+
+    /// <summary>
+    /// Whether this item's icon label may grow downward right now: sole
+    /// selection, double-click-to-open mode, no marquee or drag in flight,
+    /// and this view owns interaction (the popover view while a popover is
+    /// open). The surface adds its own trimmed check before expanding.
+    /// </summary>
+    private bool ShouldExpandItemName(ListViewBase view, WidgetItem item)
+    {
+        if (item is WidgetStackItem ||
+            (IsStackPopoverInteractionActive &&
+             !ReferenceEquals(view, _stackPopoverItemsView)) ||
+            !SelectedNameExpansionPolicy.ShouldExpandSelectedItemName(
+                _settingsService.Settings.FileWidget.DoubleClickToOpen,
+                view.SelectedItems.Count,
+                _isBoxSelecting,
+                IsSurfaceDragActive()))
+        {
+            return false;
+        }
+
+        return view.SelectedItems.Count == 1 &&
+            ReferenceEquals(view.SelectedItems[0], item);
+    }
+
+    // ── selected-name expansion overlay ──────────────────────────────────
+    // The trimmed label cannot grow inside its fixed cell: ItemsWrapGrid
+    // clips the content to the uniform slot, so extra lines never render.
+    // Instead the host draws an expanded selection footprint as an overlay
+    // above the items view (the same layer family as the rename editor),
+    // growing from the tile's top down to, at most, the surface bottom.
+
+    private TextBlock? _nameExpansionNameText;
+    private Border? _nameExpansionSuppressedTile;
+    private Border? _stackPopoverNameExpansionOverlay;
+    private TextBlock? _stackPopoverNameExpansionText;
+
+    private void UpdateNameExpansionOverlay(ListViewBase activeView)
+    {
+        bool isPopoverView = ReferenceEquals(activeView, _stackPopoverItemsView);
+        WidgetItem? soleItem = activeView.SelectedItems.Count == 1
+            ? activeView.SelectedItems[0] as WidgetItem
+            : null;
+        if (soleItem is not null &&
+            ShouldExpandItemName(activeView, soleItem) &&
+            activeView.ContainerFromItem(soleItem) is SelectorItem container &&
+            FindDescendantByTag(container, "InteractiveSurface") is Border border &&
+            FileItemSurface.FindOwner(border) is { Mode: FileItemSurfaceMode.Icon } surface &&
+            surface.ItemNameText is { IsTextTrimmed: true } nameText)
+        {
+            ShowNameExpansion(isPopoverView, soleItem, surface, nameText);
+        }
+        else
+        {
+            HideNameExpansion(isPopoverView);
+        }
+    }
+
+    private void ShowNameExpansion(
+        bool isPopoverView,
+        WidgetItem item,
+        FileItemSurface surface,
+        TextBlock nameText)
+    {
+        Border? overlay = isPopoverView
+            ? EnsureStackPopoverNameExpansionOverlay()
+            : NameExpansionOverlay;
+        TextBlock? overlayText = isPopoverView
+            ? _stackPopoverNameExpansionText
+            : NameExpansionText;
+        FrameworkElement? overlayHost = isPopoverView
+            ? _stackPopoverSelectionHost
+            : SelectionOverlay.Parent as FrameworkElement;
+        if (overlay is null || overlayText is null || overlayHost is null)
+        {
+            return;
+        }
+
+        Border tile = surface.InteractiveBorder;
+        Windows.Foundation.Point tileTopLeft = tile
+            .TransformToVisual(overlayHost)
+            .TransformPoint(new Windows.Foundation.Point(0, 0));
+        Windows.Foundation.Point nameTopLeft = nameText
+            .TransformToVisual(overlayHost)
+            .TransformPoint(new Windows.Foundation.Point(0, 0));
+        // Margins position inside the host's padding box, transforms report
+        // against the element box; same correction the rename editor makes.
+        if (overlayHost is Grid hostGrid)
+        {
+            tileTopLeft.X -= hostGrid.Padding.Left;
+            tileTopLeft.Y -= hostGrid.Padding.Top;
+            nameTopLeft.X -= hostGrid.Padding.Left;
+            nameTopLeft.Y -= hostGrid.Padding.Top;
+        }
+
+        double hostBottom = overlayHost.ActualHeight -
+            (overlayHost is Grid paddingHost ? paddingHost.Padding.Bottom : 0);
+        double nameWidth = nameText.ActualWidth;
+        double fullTextHeight = MeasureRenameTextHeight(
+            item.Name,
+            nameText.FontSize,
+            double.IsFinite(nameText.MaxWidth)
+                ? Math.Max(nameText.MaxWidth, nameWidth)
+                : nameWidth);
+        // The expanded selection footprint grows from the tile's top down to
+        // the full label, clamped at the surface bottom.
+        double expandBottom = Math.Min(
+            nameTopLeft.Y + fullTextHeight + 3,
+            hostBottom - 2);
+        double overlayHeight = Math.Max(
+            tile.ActualHeight,
+            expandBottom - tileTopLeft.Y + 2);
+
+        overlay.Margin = new Thickness(tileTopLeft.X, tileTopLeft.Y, 0, 0);
+        overlay.Width = tile.ActualWidth;
+        overlay.Height = overlayHeight;
+        overlayText.FontSize = nameText.FontSize;
+        overlayText.Text = item.Name;
+        overlayText.MaxWidth = double.IsFinite(nameText.MaxWidth)
+            ? Math.Max(40, nameText.MaxWidth)
+            : Math.Max(40, nameWidth);
+        overlayText.Margin = new Thickness(
+            0,
+            Math.Max(0, nameTopLeft.Y - tileTopLeft.Y),
+            0,
+            0);
+
+        bool dark = Root.ActualTheme == ElementTheme.Dark;
+        overlay.Background = new SolidColorBrush(
+            FileItemSurfaceStyleCache.GetNeutralStateLayer(
+                dark,
+                FileItemSurfaceVisualState.Normal,
+                isSelected: true));
+        // Mirrors the selection ring tokens in FileItemSurfaceStyleCache.
+        overlay.BorderBrush = new SolidColorBrush(
+            dark
+                ? Windows.UI.Color.FromArgb(0x8B, 0xFF, 0xFF, 0xFF)
+                : Windows.UI.Color.FromArgb(0x72, 0x00, 0x00, 0x00));
+
+        overlay.Visibility = Visibility.Visible;
+        PlayNameExpansionFadeIn(overlay);
+
+        // The overlay now owns this tile's selected look: blank the tile's
+        // own selection (background, ring) and hide its truncated label so
+        // nothing doubles under the overlay. The hidden label keeps hit
+        // testing, so a click on the expanded label still reaches the slow-
+        // click rename entry.
+        RestoreNameExpansionSuppression();
+        _nameExpansionSuppressedTile = tile;
+        _nameExpansionNameText = nameText;
+        tile.Background = null;
+        tile.BorderBrush = null;
+        nameText.Opacity = 0;
+    }
+
+    private void HideNameExpansion(bool isPopoverView)
+    {
+        Border? overlay = isPopoverView
+            ? _stackPopoverNameExpansionOverlay
+            : NameExpansionOverlay;
+        if (overlay is null && _nameExpansionSuppressedTile is null)
+        {
+            return;
+        }
+
+        StopNameExpansionFadeIn(overlay);
+        if (overlay is not null)
+        {
+            overlay.Visibility = Visibility.Collapsed;
+        }
+
+        RestoreNameExpansionSuppression();
+    }
+
+    private void RestoreNameExpansionSuppression()
+    {
+        if (_nameExpansionNameText is { } nameText)
+        {
+            nameText.Opacity = 1;
+        }
+
+        if (_nameExpansionSuppressedTile is { } tile)
+        {
+            _nameExpansionSuppressedTile = null;
+            _nameExpansionNameText = null;
+            // Bring the tile's own selected look back immediately instead of
+            // waiting for the next selection-driven refresh.
+            ApplyItemSurfaceVisual(
+                tile,
+                FileItemSurface.FindOwner(tile)?.VisualState ??
+                    FileItemSurfaceVisualState.Normal);
+        }
+    }
+
+    private void HideAllNameExpansions()
+    {
+        HideNameExpansion(isPopoverView: false);
+        HideNameExpansion(isPopoverView: true);
+    }
+
+    private Border? EnsureStackPopoverNameExpansionOverlay()
+    {
+        if (_stackPopoverNameExpansionOverlay is { } existing)
+        {
+            return existing;
+        }
+
+        if (_stackPopoverSelectionHost is not { } itemsHost)
+        {
+            return null;
+        }
+
+        var text = new TextBlock
+        {
+            HorizontalAlignment = HorizontalAlignment.Center,
+            TextAlignment = TextAlignment.Center,
+            TextTrimming = TextTrimming.CharacterEllipsis,
+            TextWrapping = TextWrapping.Wrap
+        };
+        var overlay = new Border
+        {
+            HorizontalAlignment = HorizontalAlignment.Left,
+            VerticalAlignment = VerticalAlignment.Top,
+            Background = new SolidColorBrush(Colors.Transparent),
+            BorderThickness = new Thickness(1),
+            CornerRadius = new CornerRadius(2),
+            IsHitTestVisible = false,
+            Visibility = Visibility.Collapsed,
+            Child = text
+        };
+        Canvas.SetZIndex(overlay, 35);
+        itemsHost.Children.Add(overlay);
+        _stackPopoverNameExpansionOverlay = overlay;
+        _stackPopoverNameExpansionText = text;
+        return overlay;
+    }
+
+    private void ReleaseStackPopoverNameExpansionOverlay()
+    {
+        if (_stackPopoverNameExpansionOverlay is { } overlay)
+        {
+            overlay.Child = null;
+            _stackPopoverSelectionHost?.Children.Remove(overlay);
+        }
+
+        _stackPopoverNameExpansionOverlay = null;
+        _stackPopoverNameExpansionText = null;
+    }
+
+    private static void PlayNameExpansionFadeIn(Border overlay)
+    {
+        Visual visual = ElementCompositionPreview.GetElementVisual(overlay);
+        Compositor compositor = visual.Compositor;
+        ScalarKeyFrameAnimation animation = compositor.CreateScalarKeyFrameAnimation();
+        // A short lift, not a blink. Composition keeps this NativeAOT-safe;
+        // XAML storyboards carry trimming metadata risk here.
+        animation.InsertKeyFrame(0.0f, 0.55f);
+        animation.InsertKeyFrame(
+            1.0f,
+            1.0f,
+            compositor.CreateCubicBezierEasingFunction(
+                new System.Numerics.Vector2(0.4f, 0.0f),
+                new System.Numerics.Vector2(0.2f, 1.0f)));
+        animation.Duration = TimeSpan.FromMilliseconds(90);
+        visual.StartAnimation("Opacity", animation);
+    }
+
+    private static void StopNameExpansionFadeIn(Border overlay)
+    {
+        ElementCompositionPreview.GetElementVisual(overlay)
+            .StopAnimation("Opacity");
+    }
 
     private void ApplySelectionRectangleAppearance()
     {
@@ -137,6 +418,14 @@ public sealed partial class FileSurfaceContent
             return;
         }
 
+        // Slow-click rename reads this flag in ItemClick: a click only enters
+        // rename when its press landed on the name label, never on the icon
+        // (where a press usually stages a drag). List mode keeps whole-row
+        // hit semantics, matching Explorer detail view.
+        _lastItemPressOnLabel =
+            FileItemSurface.FindOwner(border) is not { } pressedSurface ||
+            IsPointerWithinNameLabel(pressedSurface, e);
+
         ListViewBase listView = GetActiveItemsView();
         RestoreDismissedItemFocusVisual(listView.ContainerFromItem(item) as SelectorItem, "PointerFocused");
         _pendingPointerDragItems = listView.SelectedItems.Contains(item)
@@ -151,6 +440,23 @@ public sealed partial class FileSurfaceContent
         // the same click toggle twice and can leave a stale custom highlight.
         // The snapshot above only preserves an existing multi-selection for a
         // drag that starts on one of its selected anchors.
+    }
+
+    private static bool IsPointerWithinNameLabel(
+        FileItemSurface surface,
+        PointerRoutedEventArgs e)
+    {
+        if (surface.Mode != FileItemSurfaceMode.Icon)
+        {
+            return true;
+        }
+
+        TextBlock nameText = surface.ItemNameText;
+        Windows.Foundation.Point point = e.GetCurrentPoint(nameText).Position;
+        return point.X >= 0 &&
+            point.Y >= 0 &&
+            point.X <= nameText.ActualWidth &&
+            point.Y <= nameText.ActualHeight;
     }
 
     private void ItemSurface_PointerGestureEnded(
@@ -172,6 +478,12 @@ public sealed partial class FileSurfaceContent
     {
         if (!TryGetFolderDropTarget(sender, out Border border, out WidgetItem targetFolder))
         {
+            if (TryGetRecycleBinDropTarget(sender, out Border binBorder, out WidgetItem binTile))
+            {
+                HandleRecycleBinDragOver(e, binBorder, binTile);
+                return;
+            }
+
             TryHandleLaunchTargetDragOver(sender, e);
             return;
         }
@@ -261,6 +573,15 @@ public sealed partial class FileSurfaceContent
     {
         if (!TryGetFolderDropTarget(sender, out Border border, out _))
         {
+            // A recycle-bin tile rides the folder drop-target visual, and the
+            // root feedback path only clears the recorded folder target: the
+            // bin must drop its highlight when the pointer really leaves.
+            if (TryGetRecycleBinDropTarget(sender, out Border binBorder, out _) &&
+                !IsPointerInsideDropElement(binBorder, e))
+            {
+                ClearFolderDropTarget();
+            }
+
             // A shortcut tile stays the recorded release target while the
             // pointer is still over it: refreshing a ListView container during
             // the real-time reorder preview can raise DragLeave even though the
@@ -296,6 +617,12 @@ public sealed partial class FileSurfaceContent
     {
         if (!TryGetFolderDropTarget(sender, out _, out WidgetItem targetFolder))
         {
+            if (TryGetRecycleBinDropTarget(sender, out _, out WidgetItem binTile))
+            {
+                await HandleRecycleBinDropAsync(e, binTile);
+                return;
+            }
+
             await TryHandleLaunchTargetDropAsync(sender, e);
             return;
         }
@@ -471,7 +798,7 @@ public sealed partial class FileSurfaceContent
 
                 if (!string.IsNullOrWhiteSpace(ViewModel.MappedFolderPath))
                 {
-                    await ViewModel.RefreshFromConfigAsync();
+                    await ViewModel.RefreshFromConfigAsync(clearIconCacheBeforeHydration: false);
                 }
 
                 string[] movedSourcePaths = move
@@ -712,7 +1039,7 @@ public sealed partial class FileSurfaceContent
 
             if (!string.IsNullOrWhiteSpace(ViewModel.MappedFolderPath))
             {
-                await ViewModel.RefreshFromConfigAsync();
+                await ViewModel.RefreshFromConfigAsync(clearIconCacheBeforeHydration: false);
             }
 
             if (move)
@@ -795,7 +1122,7 @@ public sealed partial class FileSurfaceContent
 
         try
         {
-            await ViewModel.RefreshFromConfigAsync();
+            await ViewModel.RefreshFromConfigAsync(clearIconCacheBeforeHydration: false);
         }
         catch (Exception ex)
         {
@@ -882,7 +1209,7 @@ public sealed partial class FileSurfaceContent
                 $"[WidgetSurface] Native stack drop failed id={WidgetId} " +
                 $"stack='{targetStackKey}': {ex}");
             ShowFeedback(new(
-                ex.Message,
+                DescribeImportFailure(ex, requestedCount: 0),
                 WidgetFeedbackSeverity.Error,
                 "native-stack-drop-error"));
             return false;
@@ -968,6 +1295,119 @@ public sealed partial class FileSurfaceContent
         border = null!;
         launchTarget = null!;
         return false;
+    }
+
+    private static bool TryGetRecycleBinDropTarget(
+        object sender,
+        out Border border,
+        out WidgetItem binTile)
+    {
+        if (sender is FileItemSurface surface &&
+            surface.DataContext is WidgetItem item &&
+            ItemDropBehaviorPolicy.Resolve(item) ==
+                ItemDropBehavior.RecycleBinDelete)
+        {
+            border = surface.InteractiveBorder;
+            binTile = item;
+            return true;
+        }
+
+        border = null!;
+        binTile = null!;
+        return false;
+    }
+
+    /// <summary>
+    /// DragOver on the Recycle Bin namespace tile: the bin's own desktop
+    /// verb inside the grid. The tile claims the gesture (cancelling any
+    /// root insertion preview like the folder target) and advertises a move
+    /// so the release recycles the dragged files.
+    /// </summary>
+    private void HandleRecycleBinDragOver(
+        DragEventArgs e,
+        Border binBorder,
+        WidgetItem binTile)
+    {
+        DragPayloadSnapshot payload = GetDragPayload(e.DataView);
+        if (payload.IsStackPopoverMemberDrag)
+        {
+            return;
+        }
+
+        e.Handled = true;
+        // An explicit destination cancels any insertion preview the root
+        // produced, so DragItemsCompleted cannot commit a stale reorder.
+        if (_isSurfaceReorderDragActive ||
+            _surfaceReorderInsertionIndex >= 0)
+        {
+            PersistSurfaceReorder();
+        }
+        ClearExternalDropPreviewPlacement();
+
+        if (_isImportBusy ||
+            !payload.HasSurfacePathData ||
+            payload.Paths.Contains(
+                binTile.Path,
+                StringComparer.OrdinalIgnoreCase))
+        {
+            // Dropping the bin on itself, or nothing usable to recycle.
+            e.AcceptedOperation = DataPackageOperation.None;
+            ClearFolderDropTarget();
+            return;
+        }
+
+        e.AcceptedOperation =
+            e.AllowedOperations.HasFlag(DataPackageOperation.Move)
+                ? DataPackageOperation.Move
+                : e.AllowedOperations.HasFlag(DataPackageOperation.Copy)
+                    ? DataPackageOperation.Copy
+                    : DataPackageOperation.None;
+        if (e.AcceptedOperation == DataPackageOperation.None)
+        {
+            ClearFolderDropTarget();
+            return;
+        }
+
+        SetFolderDropTarget(binBorder);
+        if (payload.IsDeskBoxFileDrag)
+        {
+            ApplyDeskBoxFileDragFeedback(
+                e,
+                e.AcceptedOperation,
+                T("Widget.DropOnRecycleBinHint"));
+        }
+    }
+
+    private async Task HandleRecycleBinDropAsync(
+        DragEventArgs e,
+        WidgetItem binTile)
+    {
+        e.Handled = true;
+        // The destination deletes; never complete the drag with a transfer
+        // result. Source-side cleanup is watcher-driven, the same contract
+        // folder imports keep after their own transfer.
+        e.AcceptedOperation = DataPackageOperation.None;
+        ClearFolderDropTarget();
+        PersistSurfaceReorder();
+        ApplyDropVisual(FileDropVisualState.None);
+
+        DragPayloadSnapshot payload = GetDragPayload(e.DataView);
+        TraceTargetDropEntered("recycle-bin", payload, e);
+        if (_isImportBusy || !payload.HasSurfacePathData)
+        {
+            ResetDragPayloadCache();
+            return;
+        }
+
+        var deferral = e.GetDeferral();
+        try
+        {
+            await DeleteDroppedFilesForBinAsync(payload.Paths, binTile.Path);
+        }
+        finally
+        {
+            deferral.Complete();
+        }
     }
 
     /// <summary>
@@ -2039,7 +2479,7 @@ public sealed partial class FileSurfaceContent
                         ImportCompletionState.Failed);
                 }
                 ShowFeedback(new(
-                    ex.Message,
+                    DescribeImportFailure(ex, requestedCount: 0),
                     WidgetFeedbackSeverity.Error,
                     "stack-file-drop-error"));
             }
@@ -2257,7 +2697,19 @@ public sealed partial class FileSurfaceContent
 
     private void UpdateItemSurfaceVisuals()
     {
-        ListViewBase activeView = GetActiveItemsView();
+        UpdateItemSurfaceVisualsForView(GetActiveItemsView());
+    }
+
+    private void CollapseMainSurfaceNameExpansion()
+    {
+        // UpdateItemSurfaceVisuals targets the active view, which is the
+        // popover while it is open; collapse the main views explicitly.
+        UpdateItemSurfaceVisualsForView(ItemsGrid);
+        UpdateItemSurfaceVisualsForView(ItemsList);
+    }
+
+    private void UpdateItemSurfaceVisualsForView(ListViewBase activeView)
+    {
         foreach (WidgetItem item in activeView.Items
                      .OfType<WidgetItem>()
                      .Where(item => item is not WidgetStackItem))
@@ -2276,7 +2728,7 @@ public sealed partial class FileSurfaceContent
             _itemSurfaces.Add(border);
             FileItemSurfaceVisualState state =
                 FileItemSurface.FindOwner(border)?.VisualState ??
-                FileItemSurfaceVisualState.Normal;
+                    FileItemSurfaceVisualState.Normal;
             ApplyItemSurfaceVisual(border, state);
         }
 
@@ -2287,12 +2739,32 @@ public sealed partial class FileSurfaceContent
                 _itemSurfaces.Remove(border);
             }
         }
+
+        UpdateNameExpansionOverlay(activeView);
     }
 
     private void ApplyItemSurfaceVisual(
         Border border,
         FileItemSurfaceVisualState state)
     {
+        // While the expansion overlay owns this tile's selected look, the
+        // tile itself stays blank: overlaying the two selected backgrounds,
+        // rings, and labels reads as doubled strokes. Any state refresh that
+        // lands here during the expansion must keep the tile blank.
+        if (ReferenceEquals(border, _nameExpansionSuppressedTile))
+        {
+            border.Background = null;
+            border.BorderBrush = null;
+            border.Opacity = 1;
+            WidgetItem? suppressedItem = border.DataContext as WidgetItem;
+            FileTransferPathState suppressedTransfer =
+                GetTransferState(suppressedItem);
+            FileItemSurface.FindOwner(border)?.SetTransferState(
+                suppressedTransfer,
+                GetTransferStatusText(suppressedTransfer));
+            return;
+        }
+
         bool isDropTarget = ReferenceEquals(border, _folderDropTarget) ||
             ReferenceEquals(border, _launchDropTarget);
         if (isDropTarget && state != FileItemSurfaceVisualState.DropTarget)
@@ -2310,9 +2782,10 @@ public sealed partial class FileSurfaceContent
         surface?.SetTransferState(
             transferState,
             GetTransferStatusText(transferState));
+        ListViewBase activeView = GetActiveItemsView();
         bool isSelected = item is not null &&
                           item is not WidgetStackItem &&
-                          GetActiveItemsView().SelectedItems.Contains(item);
+                          activeView.SelectedItems.Contains(item);
         _itemSurfaceStyleCache.Apply(
             border,
             state,

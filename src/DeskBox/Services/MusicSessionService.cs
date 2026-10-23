@@ -139,10 +139,24 @@ public sealed class MusicSessionService : IDisposable
 
         var session = ResolveSession(preferredSessionId);
         AttachCurrentSession(session);
+        if (session is null)
+        {
+            return null;
+        }
 
-        return session is null
-            ? null
-            : await CreateInfoAsync(session);
+        try
+        {
+            return await CreateInfoAsync(session);
+        }
+        catch (Exception ex)
+        {
+            // The full-info read races the player's exit on its synchronous
+            // halves too; callers treat null as "no update" and the next
+            // refresh or SessionsChanged reattaches — same contract as the
+            // timeline and playback snapshot reads.
+            App.LogVerbose($"[MusicSession] Skipped stale session info read: {ex.Message}");
+            return null;
+        }
     }
 
     public async Task<MusicTimelineSnapshot?> GetCurrentTimelineAsync(string? preferredSessionId = null)
@@ -239,41 +253,77 @@ public sealed class MusicSessionService : IDisposable
 
     public async Task<bool> TryPlayAsync(string? sessionId)
     {
-        var session = await GetSessionAsync(sessionId);
-        return session is not null && await session.TryPlayAsync();
+        return await TryControlAsync(sessionId, "play", session => session.TryPlayAsync());
     }
 
     public async Task<bool> TryPauseAsync(string? sessionId)
     {
-        var session = await GetSessionAsync(sessionId);
-        return session is not null && await session.TryPauseAsync();
+        return await TryControlAsync(sessionId, "pause", session => session.TryPauseAsync());
     }
 
     public async Task<bool> TryPreviousAsync(string? sessionId)
     {
-        var session = await GetSessionAsync(sessionId);
-        return session is not null && await session.TrySkipPreviousAsync();
+        return await TryControlAsync(sessionId, "previous", session => session.TrySkipPreviousAsync());
     }
 
     public async Task<bool> TryNextAsync(string? sessionId)
     {
-        var session = await GetSessionAsync(sessionId);
-        return session is not null && await session.TrySkipNextAsync();
+        return await TryControlAsync(sessionId, "next", session => session.TrySkipNextAsync());
     }
 
     public async Task<bool> TrySeekAsync(string? sessionId, TimeSpan position)
     {
-        var session = await GetSessionAsync(sessionId);
-        return session is not null && await session.TryChangePlaybackPositionAsync((long)position.TotalMilliseconds * 10_000);
+        long positionHundredNanoseconds = (long)position.TotalMilliseconds * 10_000;
+        return await TryControlAsync(
+            sessionId,
+            "seek",
+            session => session.TryChangePlaybackPositionAsync(positionHundredNanoseconds));
+    }
+
+    /// <summary>
+    /// Media commands target a session whose backing player can vanish at
+    /// any moment; the resulting COMException (0x800706BA) surfaced through
+    /// async-void click handlers as recurring unhandled exceptions in
+    /// feedback diagnostics. Reads already degraded silently for the same
+    /// reason — controls now do too.
+    /// </summary>
+    private async Task<bool> TryControlAsync(
+        string? sessionId,
+        string operation,
+        Func<GlobalSystemMediaTransportControlsSession, Windows.Foundation.IAsyncOperation<bool>> control)
+    {
+        // Resolution itself can race the player's exit, so it shares the
+        // guard instead of running in GetSessionAsync.
+        try
+        {
+            var session = await GetSessionAsync(sessionId);
+            return session is not null && await control(session);
+        }
+        catch (Exception ex)
+        {
+            App.LogVerbose($"[MusicSession] Skipped stale control '{operation}': {ex.Message}");
+            return false;
+        }
     }
 
     public async Task<bool> TryChangePlaybackModeAsync(string? sessionId, MusicPlaybackMode playbackMode)
     {
-        var session = await GetSessionAsync(sessionId);
-        if (session is null)
+        try
         {
+            var session = await GetSessionAsync(sessionId);
+            return session is not null && await ApplyPlaybackModeAsync(session, playbackMode);
+        }
+        catch (Exception ex)
+        {
+            App.LogVerbose($"[MusicSession] Skipped stale control 'mode': {ex.Message}");
             return false;
         }
+    }
+
+    private static async Task<bool> ApplyPlaybackModeAsync(
+        GlobalSystemMediaTransportControlsSession session,
+        MusicPlaybackMode playbackMode)
+    {
 
         var playbackInfo = session.GetPlaybackInfo();
         var controls = playbackInfo.Controls;

@@ -12,7 +12,7 @@
   <Identity
     Name="D1FC332A.DeskBoxWidgets"
     Publisher="CN=3B75AA4A-2433-4F71-9CC1-B644B26F474A"
-    Version="1.5.6.0" />
+    Version="1.5.9.0" />
 
   <mp:PhoneIdentity PhoneProductId="7bb59608-421d-4fd4-8f12-8929f87d086a" PhonePublisherId="00000000-0000-0000-0000-000000000000" />
 
@@ -23,7 +23,7 @@
   </Properties>
 
   <Dependencies>
-    <TargetDeviceFamily Name="Windows.Desktop" MinVersion="10.0.19044.0" MaxVersionTested="10.0.26100.0" />
+    <TargetDeviceFamily Name="Windows.Desktop" MinVersion="10.0.19041.0" MaxVersionTested="10.0.26100.0" />
   </Dependencies>
 
   <Resources>
@@ -39,6 +39,7 @@
     <Resource Language="ar-SA" />
     <Resource Language="bn-BD" />
     <Resource Language="ru-RU" />
+    <Resource Language="ko-KR" />
   </Resources>
 
   <Applications>
@@ -62,7 +63,7 @@
           <uap5:StartupTask
             TaskId="DeskBoxStartupTask"
             Enabled="false"
-            DisplayName="DeskBox" />
+            DisplayName="ms-resource:AppDisplayName" />
         </uap5:Extension>
         <desktop:Extension Category="windows.toastNotificationActivation">
           <desktop:ToastNotificationActivation ToastActivatorCLSID="4D54EEC6-13BE-4C8F-A8F7-81FE72F4B2C9" />

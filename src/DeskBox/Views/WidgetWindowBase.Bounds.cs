@@ -27,6 +27,15 @@ public abstract partial class WidgetWindowBase
     private readonly WindowCornerRegion _legacyCornerRegion = new();
     private Windows.Foundation.TypedEventHandler<UIElement, GettingFocusEventArgs>? _desktopPinnedGettingFocusHandler;
 
+    // WM_MOUSEACTIVATE suppression runs before the same click is routed to
+    // XAML, so without this stamp one suppressed click would run the bottom
+    // reassert twice (native subclass + routed handler). The guard window
+    // only needs to cover the native-message → XAML-dispatch hop of a single
+    // click; anything older is a genuinely new click.
+    private long _desktopPinnedNativeSuppressionTimestamp;
+    private static readonly long DesktopPinnedNativeSuppressionWindowTicks =
+        TimeSpan.FromMilliseconds(150).Ticks;
+
     protected void ConfigureWindowCore()
     {
         if (!_isTrackedForDiagnostics)
@@ -126,7 +135,7 @@ public abstract partial class WidgetWindowBase
 
     private void InstallDesktopPinnedActivationGuard()
     {
-        _desktopPinnedActivationSubclassProc ??= DesktopPinnedActivationSubclassProc;
+        _desktopPinnedActivationSubclassProc ??= CallbackDepth.WrapSubclassProc(DesktopPinnedActivationSubclassProc);
         if (_isDesktopPinnedActivationSubclassInstalled)
         {
             return;
@@ -255,12 +264,25 @@ public abstract partial class WidgetWindowBase
 
         if (allowActivation)
         {
-            ActivateDesktopPinnedWindow(reason);
+            DeferDesktopPinnedActivation(reason);
+        }
+        else if (WasRecentlyNativeSuppressed())
+        {
+            // The WM_MOUSEACTIVATE subclass already scheduled the desktop
+            // bottom reassert for this exact click; the routed event is the
+            // same press, not a new one.
         }
         else
         {
-            RestoreDesktopPinnedBottomState(reason);
+            DeferDesktopPinnedRestore(reason);
         }
+    }
+
+    private bool WasRecentlyNativeSuppressed()
+    {
+        long timestamp = _desktopPinnedNativeSuppressionTimestamp;
+        return timestamp != 0 &&
+            DateTime.UtcNow.Ticks - timestamp < DesktopPinnedNativeSuppressionWindowTicks;
     }
 
     private void RootElement_GotFocusForDesktopPinnedLayer(
@@ -277,7 +299,7 @@ public abstract partial class WidgetWindowBase
         // Buttons that open an editor focus it programmatically after their
         // click event. That focus request is also an explicit text-entry action.
         WidgetLayerService.PrepareForDesktopPinnedKeyboardInput(HWnd);
-        ActivateDesktopPinnedWindow("keyboard-focus");
+        DeferDesktopPinnedActivation("keyboard-focus");
     }
 
     private static bool IsKeyboardInputTarget(object? source)
@@ -310,13 +332,27 @@ public abstract partial class WidgetWindowBase
         _desktopPinnedInputActivationInProgress = true;
         try
         {
-            if (Win32Helper.GetForegroundWindow() != HWnd)
+            IntPtr foreground = Win32Helper.GetForegroundWindow();
+            if (foreground != HWnd)
             {
-                // Activation is retained for keyboard-oriented controls, but
-                // the HWND is returned to the desktop bottom before this input
-                // dispatch completes, so activation never creates a layer lease.
-                base.Activate();
-                _ = Win32Helper.SetForegroundWindow(HWnd);
+                // 454: after "show desktop" the shell owns the foreground, and
+                // activating this DefView-owned HWND promotes the whole owner
+                // band — the hand-off that can drag a minimized borderless
+                // fullscreen application back to the front. A pointer click
+                // does not need that promotion: the mouse message is already
+                // delivered (MA_NOACTIVATE semantics), and keyboard-oriented
+                // activations still take the full path below.
+                bool pointerOriginOnDesktopForeground =
+                    string.Equals(reason, "routed-pointer", StringComparison.Ordinal) &&
+                    IsDesktopShellRootWindow(foreground);
+                if (!pointerOriginOnDesktopForeground)
+                {
+                    // Activation is retained for keyboard-oriented controls, but
+                    // the HWND is returned to the desktop bottom before this input
+                    // dispatch completes, so activation never creates a layer lease.
+                    base.Activate();
+                    _ = Win32Helper.SetForegroundWindow(HWnd);
+                }
             }
         }
         finally
@@ -326,6 +362,38 @@ public abstract partial class WidgetWindowBase
         }
 
         RestoreDesktopPinnedBottomState(reason);
+        // The deliberate activation promoted the whole DefView owner band;
+        // drop the siblings back under covering applications in this same
+        // cycle so only the interacting window stays up (#574).
+        App.Current.WidgetManager?.RebedPinnedSiblingsAfterActivation(
+            HWnd,
+            $"{reason}-siblings");
+    }
+
+    private static bool IsDesktopShellRootWindow(IntPtr windowHandle)
+    {
+        if (windowHandle == IntPtr.Zero)
+        {
+            return false;
+        }
+
+        IntPtr current = windowHandle;
+        while (current != IntPtr.Zero)
+        {
+            var className = new System.Text.StringBuilder(256);
+            int length = Win32Helper.GetClassName(current, className, className.Capacity);
+            if (length > 0 &&
+                (string.Equals(className.ToString(), "Progman", StringComparison.Ordinal) ||
+                 string.Equals(className.ToString(), "WorkerW", StringComparison.Ordinal) ||
+                 string.Equals(className.ToString(), "SHELLDLL_DefView", StringComparison.Ordinal)))
+            {
+                return true;
+            }
+
+            current = Win32Helper.GetParent(current);
+        }
+
+        return false;
     }
 
     private void WidgetWindowBase_ActivatedForDesktopPinnedLayer(
@@ -337,12 +405,97 @@ public abstract partial class WidgetWindowBase
             return;
         }
 
-        if (!_desktopPinnedInputActivationInProgress)
+        // Capture the in-flight flag at event time: when the deliberate
+        // activation path raises this event synchronously the flag is true,
+        // and that path's own restore/rebed already covers this activation.
+        bool deliberateActivationInFlight = _desktopPinnedInputActivationInProgress;
+        WindowActivationState state = args.WindowActivationState;
+        // The bottom restore and the sibling re-bed must land in the same
+        // dispatcher turn (#574: the group must never linger above covering
+        // applications between the two), so they defer together as one unit.
+        UiDispatch.PostAfterCallback(() =>
         {
-            App.Current.WidgetManager?.TraceDesktopPinnedInteraction(DispatcherQueue, HWnd, $"window-{args.WindowActivationState}");
-            RestoreDesktopPinnedBottomState(
-                $"window-{args.WindowActivationState}");
-        }
+            // IsDragging alone must NOT gate this unit: it is set
+            // synchronously inside the same press dispatch (BeginWindowDragCore
+            // runs right after the enqueue), so a bare check would kill every
+            // deferred unit raised by this click. Gate on real movement
+            // instead — owner surgery while the window is actually moving is
+            // the hazard, not the press-and-hold.
+            if (!Win32Helper.IsWindowInCurrentProcess(HWnd) ||
+                deliberateActivationInFlight ||
+                (IsDragging && HasMovedTitleBarDrag))
+            {
+                return;
+            }
+
+            App.Current.WidgetManager?.TraceDesktopPinnedInteraction(DispatcherQueue, HWnd, $"window-{state}");
+            RestoreDesktopPinnedBottomState($"window-{state}");
+            // A native activation also promoted the whole owner band; re-bed
+            // the siblings in this same landing turn so the group never
+            // lingers above covering applications (#574).
+            if (state == WindowActivationState.CodeActivated)
+            {
+                App.Current.WidgetManager?.RebedPinnedSiblingsAfterActivation(
+                    HWnd,
+                    "window-CodeActivated-siblings");
+            }
+        });
+    }
+
+    /// <summary>
+    /// Defers the whole activation unit (busy flag, activation transaction,
+    /// bedding restore, sibling re-bed) off the current callback frame —
+    /// input-callback stacks must not run window surgery (drag-freeze
+    /// family). The foreground snapshot guard drops the unit if focus moved
+    /// to any other window between the callback and the landing turn: a late
+    /// activation must never steal a foreground the user has since given
+    /// away, and the in-method foreground check cannot see that on its own.
+    /// </summary>
+    private void DeferDesktopPinnedActivation(string reason)
+    {
+        IntPtr foregroundAtEnqueue = Win32Helper.GetForegroundWindow();
+        UiDispatch.PostAfterCallback(() =>
+        {
+            if (!Win32Helper.IsWindowInCurrentProcess(HWnd) ||
+                (IsDragging && HasMovedTitleBarDrag))
+            {
+                return;
+            }
+
+            IntPtr foregroundNow = Win32Helper.GetForegroundWindow();
+            if (foregroundNow != HWnd && foregroundNow != foregroundAtEnqueue)
+            {
+                App.LogVerbose(
+                    $"[ZOrder] {LogPrefix} deferred activation dropped " +
+                    $"reason={reason} foreground moved on " +
+                    $"hwnd=0x{HWnd.ToInt64():X}");
+                return;
+            }
+
+            ActivateDesktopPinnedWindow(reason);
+        });
+    }
+
+    /// <summary>Defers the bedding repair off the current callback frame with
+    /// window-liveness and drag guards; the decision that led here stays
+    /// synchronous. The drag guard matters because WM_MOUSEACTIVATE arrives
+    /// synchronously inside the same WM_LBUTTONDOWN dispatch that starts a
+    /// title-bar drag — the deferred unit can otherwise land mid-drag and
+    /// re-parent a window the user is moving.</summary>
+    private void DeferDesktopPinnedRestore(string reason)
+    {
+        UiDispatch.PostAfterCallback(() =>
+        {
+            // Drag guard gates on real movement (see the Activated handler):
+            // WM_MOUSEACTIVATE arrives inside the same WM_LBUTTONDOWN
+            // dispatch that starts a title-bar drag, and IsDragging is true
+            // before this unit can land.
+            if (Win32Helper.IsWindowInCurrentProcess(HWnd) &&
+                !(IsDragging && HasMovedTitleBarDrag))
+            {
+                RestoreDesktopPinnedBottomState(reason);
+            }
+        });
     }
 
     private void RestoreDesktopPinnedBottomState(string reason)
@@ -420,10 +573,22 @@ public abstract partial class WidgetWindowBase
         {
             App.Current.WidgetManager?.TraceDesktopPinnedInteraction(DispatcherQueue, HWnd, "native-pointer", pointerInput: true);
             // MA_NOACTIVATE keeps the existing foreground application active
-            // but still lets the widget receive the mouse message. Reasserting
-            // the desktop owner here also repairs any stale owner/Z-order state
-            // without a visible raise-and-restore flash.
-            RestoreDesktopPinnedBottomState("native-pointer-suppressed");
+            // but still lets the widget receive the mouse message. The stamp
+            // lets the XAML routed handler recognize this same click and skip
+            // its own duplicate reassert; the stamp must be written in this
+            // frame because the routed event is dispatched right after the
+            // native message. The bedding surgery itself (owner rewrite +
+            // HWND_BOTTOM) is window work and runs one dispatcher turn later,
+            // off the win32k callback frame (drag-freeze family).
+            _desktopPinnedNativeSuppressionTimestamp = DateTime.UtcNow.Ticks;
+            UiDispatch.PostAfterCallback(() =>
+            {
+                if (Win32Helper.IsWindowInCurrentProcess(hWnd) &&
+                    !(IsDragging && HasMovedTitleBarDrag))
+                {
+                    RestoreDesktopPinnedBottomState("native-pointer-suppressed");
+                }
+            });
             return new IntPtr(message == Win32Helper.WM_POINTERACTIVATE
                 ? Win32Helper.PA_NOACTIVATE
                 : Win32Helper.MA_NOACTIVATE);
@@ -576,8 +741,18 @@ public abstract partial class WidgetWindowBase
 
         if (updateConfig)
         {
-            UpdateConfigBoundsFromPhysical(x, y, width, height, persist: false);
+            // Restore paths may only refresh the physical X/Y cache (spec
+            // 5.2): width/height are placement intent and must survive
+            // topology repositioning untouched, so the write is physical-
+            // position-only here.
+            UpdateConfigPhysicalPositionOnly(x, y);
         }
+    }
+
+    private void UpdateConfigPhysicalPositionOnly(int x, int y)
+    {
+        Config.X = x;
+        Config.Y = y;
     }
 
     protected SizeInt32 GetPhysicalMinimumWindowSize(int x, int y, int width, int height)
@@ -622,6 +797,36 @@ public abstract partial class WidgetWindowBase
         }
     }
 
+    /// <summary>
+    /// Unified user-placement commit (spec 5.4): captures the placement with
+    /// max-intersection display ownership, updates the surface's home display
+    /// ("放哪属于哪"), and marks the profile entry authoritative. Expanded
+    /// state captures the main anchor; compact state keeps the capsule
+    /// capture and only commits home/entry.
+    /// </summary>
+    protected void CommitUserPlacementFromWindow(WidgetPlacementSource source)
+    {
+        WidgetManager? manager = App.Current?.WidgetManager;
+        if (manager is null)
+        {
+            return;
+        }
+
+        RectInt32 actual = GetActualWindowBounds();
+        if (IsCompactBoundsStateActive)
+        {
+            CaptureCompactPlacement(actual, persist: false);
+            manager.CommitUserPlacement(Config, actual, actual, source, captureIntent: false);
+            return;
+        }
+
+        manager.CommitUserPlacement(
+            Config,
+            CollapseHostBoundsToContent(actual),
+            actual,
+            source);
+    }
+
     // ── Display change restoration ─────────────────────────────
 
     protected bool TryRestoreBoundsForCurrentTopology(bool allowHidden, bool updateConfig = true)
@@ -641,7 +846,7 @@ public abstract partial class WidgetWindowBase
             return false;
         }
 
-        var bounds = ResolveWidgetBoundsForCurrentState();
+        var bounds = ResolveWidgetBoundsForCurrentState(out bool placementFellBack);
         RectInt32 actual = GetActualWindowBounds();
         if (actual.X == bounds.X &&
             actual.Y == bounds.Y &&
@@ -651,13 +856,17 @@ public abstract partial class WidgetWindowBase
             return true;
         }
 
+        // A fallback resolve (shelter geometry from EnsureVisible) parks the
+        // window somewhere visible but is NOT user intent — feeding it into
+        // the config's physical cache would let the fallback masquerade as
+        // a placement and win later arbitrations (2026-10-20 lineage).
         ApplyWindowBounds(
             bounds.X,
             bounds.Y,
             bounds.Width,
             bounds.Height,
             persist: false,
-            updateConfig: updateConfig);
+            updateConfig: updateConfig && !placementFellBack);
         return true;
     }
 
@@ -668,6 +877,12 @@ public abstract partial class WidgetWindowBase
 
     public void RestoreBoundsForCurrentTopology()
     {
+        // A programmatic re-resolve must not trust the memoized capsule
+        // placement: screen-binding changes resolve a different monitor, and
+        // the stale stable-bounds memo would silently pin the collapsed
+        // capsule to its old screen (the pin-all batch missed collapsed
+        // widgets through exactly this path).
+        InvalidateStableCompactBounds();
         _ = TryRestoreBoundsForCurrentTopology(allowHidden: true);
     }
 

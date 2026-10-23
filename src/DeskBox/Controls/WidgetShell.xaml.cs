@@ -229,6 +229,19 @@ public sealed partial class WidgetShell : UserControl
             typeof(WidgetShell),
             new PropertyMetadata(null, OnCustomBackgroundChanged));
 
+    /// <summary>
+    /// Per-widget solid background color as an opaque #RRGGBB hex string.
+    /// Stored as a string (the same shape as the foreground-color override)
+    /// rather than a nullable struct so the dependency property stays a plain
+    /// reference type; null or unparsable means "no color override".
+    /// </summary>
+    public static readonly DependencyProperty CustomBackgroundColorHexProperty =
+        DependencyProperty.Register(
+            nameof(CustomBackgroundColorHex),
+            typeof(string),
+            typeof(WidgetShell),
+            new PropertyMetadata(null, OnCustomBackgroundChanged));
+
     public static readonly DependencyProperty OverlayTitleProperty =
         DependencyProperty.Register(
             nameof(OverlayTitle),
@@ -313,6 +326,7 @@ public sealed partial class WidgetShell : UserControl
     private double _responsiveTargetContentWidth;
     private double _responsiveTargetContentHeight;
     private bool _isTransitionContentLayoutFrozen;
+    private bool _isTransitionTitleBarLayoutFrozen;
     private WidgetCompactWidthTier _compactWidthTier = WidgetCompactWidthTier.Standard;
     private bool _isPointerOverShell;
     private bool _isHostVisualActivityEnabled;
@@ -651,6 +665,13 @@ public sealed partial class WidgetShell : UserControl
         set => SetValue(CustomBackgroundPanoramaSourceProperty, value);
     }
 
+    /// <summary>Per-widget solid background color hex; null follows the image chain.</summary>
+    public string? CustomBackgroundColorHex
+    {
+        get => (string?)GetValue(CustomBackgroundColorHexProperty);
+        set => SetValue(CustomBackgroundColorHexProperty, value);
+    }
+
     /// <summary>
     /// Places the panorama image so the slice under the widget's desktop
     /// position lands inside the plate; values are DIPs relative to the
@@ -667,7 +688,9 @@ public sealed partial class WidgetShell : UserControl
         CustomBackgroundPanoramaImage.Margin = new Thickness(left, top, 0, 0);
     }
 
-    public bool IsCustomBackgroundActive => CustomBackgroundSource is not null;
+    public bool IsCustomBackgroundActive =>
+        CustomBackgroundSource is not null ||
+        CustomBackgroundColorHex is not null;
 
     public string OverlayTitle
     {
@@ -792,8 +815,12 @@ public sealed partial class WidgetShell : UserControl
         }
 
         bool shellWasActive = _isPointerOverShell;
+        if (_isPointerOverDragHandle)
+        {
+            App.LogVerbose("[DragCue] Cleared by transient-state reset (host visibility).");
+        }
         _isPointerOverShell = false;
-        _isPointerOverDragHandle = false;
+        ForceClearDragCue();
         _isCompactKeyboardFocused = false;
         ResetCompactInteractionRegions();
 
@@ -982,6 +1009,11 @@ public sealed partial class WidgetShell : UserControl
     internal void CancelGroupTabDragHover()
     {
         GroupTitleSwitcher.CancelDragHoverSwitch();
+    }
+
+    internal void SetGroupTabFileDragActive(bool active)
+    {
+        GroupTitleSwitcher.SetFileDragStripFreeze(active);
     }
 
     public void SetGroupDropPreview(
@@ -1412,10 +1444,16 @@ public sealed partial class WidgetShell : UserControl
 
         bool animationsEnabled = SystemAnimationsEnabled();
 
+        WidgetGroupSwitchAnimationEffect effect =
+            WidgetGroupSwitchAnimationPolicy.ResolveEffect(
+                App.Current?.SettingsService?.Settings.WidgetLayout
+                    .WidgetGroupSwitchAnimationStyle,
+                _groupPresentation?.NavigationStyle);
         WidgetContentTransitionProfile profile =
             WidgetContentTransitionProfile.Create(
                 animationsEnabled,
-                directional);
+                directional,
+                effect);
         if (profile.DurationMilliseconds <= 0)
         {
             OutgoingContentPresenter.Opacity = 0;
@@ -1426,19 +1464,24 @@ public sealed partial class WidgetShell : UserControl
 
         double distance = profile.TranslationDistance;
         double sign = forward ? 1 : -1;
-        var incomingTransform = new CompositeTransform
+        bool horizontalMotion =
+            effect == WidgetGroupSwitchAnimationEffect.Horizontal;
+        string motionProperty = horizontalMotion
+            ? nameof(CompositeTransform.TranslateX)
+            : nameof(CompositeTransform.TranslateY);
+        var incomingTransform = new CompositeTransform();
+        if (profile.UsesMotion)
         {
-            ScaleX = profile.MinimumScale,
-            ScaleY = profile.MinimumScale,
-            TranslateY = profile.UsesMotion
-                ? distance * sign
-                : 0
-        };
+            if (horizontalMotion)
+            {
+                incomingTransform.TranslateX = distance * sign;
+            }
+            else
+            {
+                incomingTransform.TranslateY = distance * sign;
+            }
+        }
         var outgoingTransform = new CompositeTransform();
-        ShellContentPresenter.RenderTransformOrigin =
-            new Windows.Foundation.Point(0.5, 0.5);
-        OutgoingContentPresenter.RenderTransformOrigin =
-            new Windows.Foundation.Point(0.5, 0.5);
         ShellContentPresenter.RenderTransform = incomingTransform;
         OutgoingContentPresenter.RenderTransform = outgoingTransform;
 
@@ -1454,46 +1497,18 @@ public sealed partial class WidgetShell : UserControl
             AddTransitionAnimation(
                 storyboard,
                 outgoingTransform,
-                nameof(CompositeTransform.TranslateY),
+                motionProperty,
                 -distance * sign,
                 outgoingDurationMs,
                 easingMode: EasingMode.EaseIn);
             AddTransitionAnimation(
                 storyboard,
                 incomingTransform,
-                nameof(CompositeTransform.TranslateY),
+                motionProperty,
                 0,
                 incomingDurationMs,
                 incomingBeginTimeMs);
         }
-        AddTransitionAnimation(
-            storyboard,
-            outgoingTransform,
-            nameof(CompositeTransform.ScaleX),
-            profile.MinimumScale,
-            outgoingDurationMs,
-            easingMode: EasingMode.EaseIn);
-        AddTransitionAnimation(
-            storyboard,
-            outgoingTransform,
-            nameof(CompositeTransform.ScaleY),
-            profile.MinimumScale,
-            outgoingDurationMs,
-            easingMode: EasingMode.EaseIn);
-        AddTransitionAnimation(
-            storyboard,
-            incomingTransform,
-            nameof(CompositeTransform.ScaleX),
-            1,
-            incomingDurationMs,
-            incomingBeginTimeMs);
-        AddTransitionAnimation(
-            storyboard,
-            incomingTransform,
-            nameof(CompositeTransform.ScaleY),
-            1,
-            incomingDurationMs,
-            incomingBeginTimeMs);
         AddTransitionAnimation(
             storyboard,
             OutgoingContentPresenter,
@@ -1595,10 +1610,6 @@ public sealed partial class WidgetShell : UserControl
         OutgoingContentPresenter.Opacity = incomingVisible ? 0 : 1;
         ShellContentPresenter.RenderTransform = null;
         OutgoingContentPresenter.RenderTransform = null;
-        ShellContentPresenter.RenderTransformOrigin =
-            new Windows.Foundation.Point(0, 0);
-        OutgoingContentPresenter.RenderTransformOrigin =
-            new Windows.Foundation.Point(0, 0);
     }
 
     private void ContentTransitionViewport_SizeChanged(
@@ -1704,7 +1715,8 @@ public sealed partial class WidgetShell : UserControl
         FreezeTransitionContentLayout(
             Math.Max(0, frozenWindowWidth ?? targetWindowWidth),
             Math.Max(0, (frozenWindowHeight ?? targetWindowHeight) - titleHeight),
-            expansionAnchor);
+            expansionAnchor,
+            frozenWindowWidth ?? targetWindowWidth);
         _responsiveLayoutContent?.BeginResponsiveLayoutTransition(
                 _responsiveTargetContentWidth,
                 _responsiveTargetContentHeight,
@@ -1743,42 +1755,68 @@ public sealed partial class WidgetShell : UserControl
     private void FreezeTransitionContentLayout(
         double contentWidth,
         double contentHeight,
-        WidgetCompactExpansionAnchor expansionAnchor)
+        WidgetCompactExpansionAnchor expansionAnchor,
+        double stableWindowWidth = double.NaN)
     {
-        if (contentWidth <= 0 || contentHeight <= 0)
+        if (contentWidth > 0 && contentHeight > 0)
         {
-            return;
+            bool anchorsRight = expansionAnchor is
+                WidgetCompactExpansionAnchor.RightTop or
+                WidgetCompactExpansionAnchor.RightBottom;
+            bool anchorsBottom = expansionAnchor is
+                WidgetCompactExpansionAnchor.LeftBottom or
+                WidgetCompactExpansionAnchor.RightBottom;
+            ShellContentPresenter.Width = contentWidth;
+            ShellContentPresenter.Height = contentHeight;
+            ShellContentPresenter.HorizontalAlignment = anchorsRight
+                ? HorizontalAlignment.Right
+                : HorizontalAlignment.Left;
+            ShellContentPresenter.VerticalAlignment = anchorsBottom
+                ? VerticalAlignment.Bottom
+                : VerticalAlignment.Top;
+            _isTransitionContentLayoutFrozen = true;
         }
 
-        bool anchorsRight = expansionAnchor is
-            WidgetCompactExpansionAnchor.RightTop or
-            WidgetCompactExpansionAnchor.RightBottom;
-        bool anchorsBottom = expansionAnchor is
-            WidgetCompactExpansionAnchor.LeftBottom or
-            WidgetCompactExpansionAnchor.RightBottom;
-        ShellContentPresenter.Width = contentWidth;
-        ShellContentPresenter.Height = contentHeight;
-        ShellContentPresenter.HorizontalAlignment = anchorsRight
-            ? HorizontalAlignment.Right
-            : HorizontalAlignment.Left;
-        ShellContentPresenter.VerticalAlignment = anchorsBottom
-            ? VerticalAlignment.Bottom
-            : VerticalAlignment.Top;
-        _isTransitionContentLayoutFrozen = true;
+        // The title bar must not re-wrap at every intermediate window width
+        // during the bounds animation: each re-layout lands on the UI thread
+        // alongside the frame-paced window move and turns into visible
+        // stutter on the title (group tab strips above all). Freezing it at
+        // the transition's stable width follows the same convention the
+        // content presenter already uses — the moving HWND edge reveals or
+        // clips it, no reflow, no new animation semantics.
+        WidgetTitleBarTransitionFreeze titleFreeze =
+            WidgetTitleBarTransitionFreezePolicy.Evaluate(
+                IsOverlayChromeMode,
+                TitleBarGrid.Visibility == Visibility.Visible,
+                stableWindowWidth,
+                expansionAnchor);
+        if (titleFreeze.ShouldFreeze)
+        {
+            TitleBarGrid.Width = titleFreeze.Width;
+            TitleBarGrid.HorizontalAlignment = titleFreeze.AlignRight
+                ? HorizontalAlignment.Right
+                : HorizontalAlignment.Left;
+            _isTransitionTitleBarLayoutFrozen = true;
+        }
     }
 
     private void RestoreTransitionContentLayout()
     {
-        if (!_isTransitionContentLayoutFrozen)
+        if (_isTransitionContentLayoutFrozen)
         {
-            return;
+            ShellContentPresenter.Width = double.NaN;
+            ShellContentPresenter.Height = double.NaN;
+            ShellContentPresenter.HorizontalAlignment = HorizontalAlignment.Stretch;
+            ShellContentPresenter.VerticalAlignment = VerticalAlignment.Stretch;
+            _isTransitionContentLayoutFrozen = false;
         }
 
-        ShellContentPresenter.Width = double.NaN;
-        ShellContentPresenter.Height = double.NaN;
-        ShellContentPresenter.HorizontalAlignment = HorizontalAlignment.Stretch;
-        ShellContentPresenter.VerticalAlignment = VerticalAlignment.Stretch;
-        _isTransitionContentLayoutFrozen = false;
+        if (_isTransitionTitleBarLayoutFrozen)
+        {
+            TitleBarGrid.Width = double.NaN;
+            TitleBarGrid.HorizontalAlignment = HorizontalAlignment.Stretch;
+            _isTransitionTitleBarLayoutFrozen = false;
+        }
     }
 
     public void SetCollapsed(bool collapsed, string contentMode)
@@ -1803,7 +1841,11 @@ public sealed partial class WidgetShell : UserControl
         UpdateCompactInteractionRegionHighlights();
         if (collapsed)
         {
-            _isPointerOverDragHandle = false;
+            if (_isPointerOverDragHandle)
+            {
+                App.LogVerbose("[DragCue] Cleared by collapse transition.");
+            }
+            ForceClearDragCue();
         }
         _isMinimalCompactStyle = string.Equals(
             contentMode,
@@ -3918,15 +3960,6 @@ public sealed partial class WidgetShell : UserControl
         // A Grid keeps both copies vertically centered, including while the
         // track scrolls. Canvas children ignore VerticalAlignment.
         marquee.Clone.Margin = new Thickness(marquee.NaturalWidth + CompactMarqueeGap, 0, 0, 0);
-        // The clone's shadow layer mirrors the clone placement, plus the
-        // one-pixel drop offset it normally carries in its own Margin.
-        TextBlock cloneShadow = ResolveMarqueeCloneShadow(marquee.Clone);
-        cloneShadow.Width = marquee.NaturalWidth;
-        cloneShadow.Margin = new Thickness(
-            marquee.NaturalWidth + CompactMarqueeGap + 1,
-            1,
-            0,
-            0);
 
         var transform = new TranslateTransform();
         marquee.Track.RenderTransform = transform;
@@ -3981,17 +4014,6 @@ public sealed partial class WidgetShell : UserControl
 
     private bool ShouldSuspendCompactMarquee() =>
         _compactPresentation is { ShowVinyl: true, IsPlaying: false };
-
-    /// <summary>
-    /// The shadow layer that mirrors a marquee clone; its Margin is managed
-    /// by the marquee start/stop code alongside the clone's own placement.
-    /// </summary>
-    private TextBlock ResolveMarqueeCloneShadow(TextBlock clone)
-    {
-        return ReferenceEquals(clone, CompactTitleMarqueeClone)
-            ? CompactTitleMarqueeCloneShadow
-            : CompactSummaryMarqueeCloneShadow;
-    }
 
     private (TextBlock Primary, TextBlock Clone, Grid Track, FrameworkElement Viewport, double NaturalWidth)?
         ResolveCompactMarqueeElements()
@@ -4132,9 +4154,6 @@ public sealed partial class WidgetShell : UserControl
             _compactMarqueeClone.ClearValue(WidthProperty);
             _compactMarqueeClone.Margin = new Thickness(0);
             _compactMarqueeClone.Visibility = Visibility.Collapsed;
-            TextBlock cloneShadow = ResolveMarqueeCloneShadow(_compactMarqueeClone);
-            cloneShadow.ClearValue(WidthProperty);
-            cloneShadow.Margin = new Thickness(1, 1, 0, 0);
         }
 
         _compactMarqueePrimary = null;
@@ -4256,9 +4275,55 @@ public sealed partial class WidgetShell : UserControl
         ApplyActionButtonVisibility();
     }
 
+    /// <summary>
+    /// Raised when the pointer enters the drag bar. The hosting window
+    /// verifies the claim against the physical cursor before showing the
+    /// arrow (spurious WM_MOUSEMOVE arrive while the widget morphs its
+    /// bounds, so event coordinates are not trusted in either direction) and
+    /// keeps it armed until the cursor physically leaves the bar's zone.
+    /// </summary>
+    public event EventHandler? OverlayDragCueArmRequested;
+
+    public bool IsOverlayDragCueArmed => _isPointerOverDragHandle;
+
+    /// <summary>
+    /// The window's physical-cursor verdict. This is the only path (short of
+    /// collapse/host-hide clears) that arms or restores the cue.
+    /// </summary>
+    public void SetOverlayDragCueActive(bool active)
+    {
+        if (active)
+        {
+            if (!_isPointerOverDragHandle)
+            {
+                _isPointerOverDragHandle = true;
+                App.LogVerbose("[DragCue] Armed.");
+                UpdateOverlayDragHandleVisual();
+            }
+
+            return;
+        }
+
+        if (_isPointerOverDragHandle)
+        {
+            _isPointerOverDragHandle = false;
+            App.LogVerbose("[DragCue] Restored bar.");
+            UpdateOverlayDragHandleVisual();
+        }
+    }
+
+    /// <summary>
+    /// Immediate, unconditional clear used by state transitions (collapse,
+    /// host hide) where the cue must not linger at all.
+    /// </summary>
+    private void ForceClearDragCue() => SetOverlayDragCueActive(false);
+
     private void ShellRoot_PointerExited(object sender, PointerRoutedEventArgs e)
     {
         _isPointerOverShell = false;
+        // Deliberately no drag-cue handling here: routed exits are frequently
+        // synthetic in this app (layer reasserts, bounds animations) and must
+        // not restore the cue — only the physical-cursor poll may.
         HideCompactHint();
         CompactPointerExited?.Invoke(this, EventArgs.Empty);
         if (_isCollapsed)
@@ -4336,8 +4401,25 @@ public sealed partial class WidgetShell : UserControl
 
     private void UpdateCustomBackgroundVisual()
     {
-        bool active = CustomBackgroundSource is not null ||
+        bool imageActive = CustomBackgroundSource is not null ||
             CustomBackgroundPanoramaSource is not null;
+
+        // Solid per-widget color: parses here so an unparsable stored value
+        // self-heals to "no override" instead of throwing in measure passes.
+        Color? solidColor = null;
+        if (CustomBackgroundColorHex is { } colorHex &&
+            AccentColorHelper.TryParseHex(colorHex, out Color parsedColor))
+        {
+            solidColor = Color.FromArgb(0xFF, parsedColor.R, parsedColor.G, parsedColor.B);
+        }
+
+        CustomBackgroundColorLayer.Visibility =
+            solidColor is not null && !imageActive
+                ? Visibility.Visible
+                : Visibility.Collapsed;
+        CustomBackgroundColorLayer.Background = solidColor is { } layerColor
+            ? new SolidColorBrush(layerColor)
+            : null;
 
         // Panorama rendering positions an oversized image and clips it to
         // the plate; the plain Image path covers per-widget and unified
@@ -4364,7 +4446,8 @@ public sealed partial class WidgetShell : UserControl
         // Theme-aware scrim: dark theme dims with black, light theme with
         // white, so foreground text keeps its contrast in both themes. High
         // contrast forces a stronger floor — text contrast wins over the
-        // photo there.
+        // photo there. The scrim tames photos only: it never washes out a
+        // solid color the user picked by hand.
         double dim = Math.Clamp(CustomBackgroundDim, 0d, 1d);
         if (WindowsCompatibilityService.IsHighContrast)
         {
@@ -4376,7 +4459,7 @@ public sealed partial class WidgetShell : UserControl
                 ? Windows.UI.Color.FromArgb(0xFF, 0x00, 0x00, 0x00)
                 : Windows.UI.Color.FromArgb(0xFF, 0xFF, 0xFF, 0xFF));
         CustomBackgroundScrim.Opacity = dim;
-        CustomBackgroundScrim.Visibility = active ? Visibility.Visible : Visibility.Collapsed;
+        CustomBackgroundScrim.Visibility = imageActive ? Visibility.Visible : Visibility.Collapsed;
     }
 
     private static void OnShowAddButtonChanged(DependencyObject d, DependencyPropertyChangedEventArgs e)
@@ -5292,6 +5375,11 @@ public sealed partial class WidgetShell : UserControl
             tabSelectionRequestVersion);
     }
 
+    internal void NotifyGroupInteractionInterrupted()
+    {
+        GroupTitleSwitcher.NotifyInteractionInterrupted();
+    }
+
     private void TitleBarGrid_PointerPressed(object sender, PointerRoutedEventArgs e)
     {
         if (CanCollapseFromTitleBarClick &&
@@ -5546,14 +5634,11 @@ public sealed partial class WidgetShell : UserControl
 
     private void OverlayDragHandle_PointerEntered(object sender, PointerRoutedEventArgs e)
     {
-        _isPointerOverDragHandle = true;
-        UpdateOverlayDragHandleVisual();
-    }
-
-    private void OverlayDragHandle_PointerExited(object sender, PointerRoutedEventArgs e)
-    {
-        _isPointerOverDragHandle = false;
-        UpdateOverlayDragHandleVisual();
+        // A boundary crossing is the only trigger. The window verifies the
+        // physical cursor before the arrow shows and restores the flat bar
+        // only after the cursor physically leaves; no exit tracking exists on
+        // the shell side.
+        OverlayDragCueArmRequested?.Invoke(this, EventArgs.Empty);
     }
 
     private void UpdateOverlayDragHandleVisual(bool animate = true)
@@ -5591,7 +5676,21 @@ public sealed partial class WidgetShell : UserControl
             storyboard,
             OverlayDragGripRightRotation,
             rightAngle);
-        _overlayHandleVisualStoryboard.Begin(storyboard, showCollapseCue);
+        _overlayHandleVisualStoryboard.Begin(
+            storyboard,
+            showCollapseCue,
+            onCompleted: () =>
+            {
+                // StoryboardSlot's completion stops the storyboard and
+                // detaches its children; on WinUI that releases the held
+                // values back to their base (flat bar). The clocks are gone
+                // by the time this callback runs, so re-applying the resting
+                // values directly makes the morph persist until the cue
+                // state actually changes.
+                OverlayDragGrip.Opacity = gripOpacity;
+                OverlayDragGripLeftRotation.Angle = leftAngle;
+                OverlayDragGripRightRotation.Angle = rightAngle;
+            });
     }
 
     private static void AddHandleAngleAnimation(
@@ -5633,10 +5732,7 @@ public sealed partial class WidgetShell : UserControl
 
     private static void SetProtectedCursor(UIElement element, InputSystemCursorShape shape)
     {
-        var property = typeof(UIElement).GetProperty(
-            "ProtectedCursor",
-            System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic);
-        property?.SetValue(element, InputSystemCursor.Create(shape));
+        UiElementCursorHelper.SetCursor(element, shape);
     }
 
     private static bool IsWithin(DependencyObject source, DependencyObject target)

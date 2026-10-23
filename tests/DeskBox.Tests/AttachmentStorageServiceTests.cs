@@ -67,6 +67,71 @@ public sealed class AttachmentStorageServiceTests : IDisposable
         Assert.Equal([4, 5, 6], await File.ReadAllBytesAsync(attachment.FilePath));
     }
 
+    [Fact]
+    public async Task TryDeleteManagedCopyAsync_DeletesFileInsideManagedTree()
+    {
+        string managedDirectory = Path.Combine(_tempRoot, "managed", "item-1");
+        Directory.CreateDirectory(managedDirectory);
+        string managedFile = Path.Combine(managedDirectory, "copy.pdf");
+        await File.WriteAllBytesAsync(managedFile, [1, 2, 3]);
+
+        bool deleted = await AttachmentStorageService.TryDeleteManagedCopyAsync(
+            managedFile,
+            Path.Combine(_tempRoot, "managed"),
+            recycleFileAsync: path =>
+            {
+                File.Delete(path);
+                return Task.FromResult(true);
+            });
+
+        Assert.True(deleted);
+        Assert.False(File.Exists(managedFile));
+    }
+
+    [Fact]
+    public async Task TryDeleteManagedCopyAsync_KeepsFilesOutsideManagedTree()
+    {
+        string managedDirectory = Path.Combine(_tempRoot, "managed");
+        Directory.CreateDirectory(managedDirectory);
+        // A stale IsManagedCopy flag must never authorize deleting a path
+        // the store does not own — e.g. the user's original file.
+        string foreignFile = Path.Combine(_tempRoot, "Documents", "original.docx");
+        Directory.CreateDirectory(Path.GetDirectoryName(foreignFile)!);
+        await File.WriteAllBytesAsync(foreignFile, [4, 5, 6]);
+
+        bool deleted = await AttachmentStorageService.TryDeleteManagedCopyAsync(
+            foreignFile,
+            managedDirectory,
+            recycleFileAsync: path =>
+            {
+                File.Delete(path);
+                return Task.FromResult(true);
+            });
+
+        Assert.False(deleted);
+        Assert.True(File.Exists(foreignFile));
+        Assert.Equal([4, 5, 6], await File.ReadAllBytesAsync(foreignFile));
+    }
+
+    [Fact]
+    public async Task TryDeleteManagedCopyAsync_WithoutRecycleKernel_KeepsManagedFile()
+    {
+        // No recycle kernel (e.g. a unit-test host): the managed copy is
+        // kept rather than permanently deleted — fail-safe.
+        string managedDirectory = Path.Combine(_tempRoot, "managed");
+        Directory.CreateDirectory(managedDirectory);
+        string managedFile = Path.Combine(managedDirectory, "copy.pdf");
+        await File.WriteAllBytesAsync(managedFile, [1, 2, 3]);
+
+        bool deleted = await AttachmentStorageService.TryDeleteManagedCopyAsync(
+            managedFile,
+            managedDirectory,
+            recycleFileAsync: null);
+
+        Assert.False(deleted);
+        Assert.True(File.Exists(managedFile));
+    }
+
     public void Dispose()
     {
         if (Directory.Exists(_tempRoot))

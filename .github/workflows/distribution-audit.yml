@@ -2,6 +2,17 @@ name: Native AOT Distribution Gate
 
 on:
   workflow_dispatch:
+    inputs:
+      signing-policy:
+        description: 'Sign direct installers via SignPath (empty = skip signing)'
+        required: false
+        default: ''
+        type: string
+      expected-signer-cn:
+        description: 'Expected signer certificate CN for verification (substring match, empty = DeskBox)'
+        required: false
+        default: 'DeskBox'
+        type: string
 
 permissions:
   contents: read
@@ -40,7 +51,7 @@ jobs:
       - name: Setup pinned .NET SDK
         uses: actions/setup-dotnet@v4
         with:
-          dotnet-version: 10.0.303
+          dotnet-version: 10.0.402
 
       - name: Verify native runner, Rust, Inno Setup, and Windows SDK
         shell: pwsh
@@ -78,7 +89,31 @@ jobs:
             throw "The runner image does not expose ISCC.exe."
           }
           $innoVersion = (Get-Item -LiteralPath $iscc).VersionInfo.FileVersion
+          # Some Inno installations do not stamp ISCC.exe version info; fall
+          # back to the uninstall registration before applying the floor. The
+          # floor guards the installer language arbitration the /LANG update
+          # flow relies on (DeskBox.Updater Program.cs pins /LANG; the
+          # silent-mode no-dialog + /LANG-overrides-previous-language behavior
+          # was verified against Inno Setup 6.4+ sources).
+          if ($innoVersion -in @('', '0.0.0.0')) {
+            foreach ($hive in 'HKLM:', 'HKCU:') {
+              $innoReg = Get-ItemProperty "$hive\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\Inno Setup 6_is1" -ErrorAction SilentlyContinue
+              if ($innoReg -and $innoReg.DisplayVersion) {
+                $innoVersion = $innoReg.DisplayVersion
+                break
+              }
+            }
+          }
           Write-Host "Inno Setup compiler: $iscc ($innoVersion)"
+          $innoParsed = $null
+          if ([version]::TryParse($innoVersion, [ref]$innoParsed)) {
+            if ($innoParsed -lt [version]'6.4.0') {
+              throw "Inno Setup $innoVersion is below the required 6.4.0 (installer language arbitration floor for the /LANG update flow)."
+            }
+          }
+          else {
+            Write-Warning "Inno Setup version '$innoVersion' could not be parsed; skipped the 6.4.0 floor check."
+          }
 
           $kitsBin = Join-Path ${env:ProgramFiles(x86)} 'Windows Kits\10\bin'
           if (-not (Get-ChildItem -LiteralPath $kitsBin -Filter makeappx.exe -Recurse -File |
@@ -180,3 +215,108 @@ jobs:
           if-no-files-found: error
           retention-days: 14
           path: evidence/stage7c1-cross-architecture-summary.json
+
+  sign:
+    name: Sign direct installers (SignPath)
+    needs: distribution
+    if: needs.distribution.result == 'success' && inputs.signing-policy != ''
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+      - name: Download distribution artifacts
+        uses: actions/download-artifact@v4
+        with:
+          pattern: stage7c1-*-distribution
+          path: distribution
+
+      - name: Collect unsigned installers
+        shell: pwsh
+        run: |
+          $installers = Get-ChildItem -LiteralPath .\distribution -Recurse -Filter 'DeskBox_Setup_*.exe' -File
+          if (-not $installers) {
+            throw 'No DeskBox_Setup_*.exe found in distribution artifacts.'
+          }
+          New-Item -ItemType Directory -Force -Path .\unsigned | Out-Null
+          Copy-Item -LiteralPath $installers.FullName -Destination .\unsigned
+          Get-ChildItem -LiteralPath .\unsigned | Select-Object Name, Length
+
+      - name: Upload unsigned installers
+        id: upload-unsigned
+        uses: actions/upload-artifact@v4
+        with:
+          name: unsigned-installers
+          if-no-files-found: error
+          retention-days: 7
+          path: unsigned
+
+      - name: Submit SignPath signing request
+        id: signpath
+        uses: signpath/github-action-submit-signing-request@v3
+        with:
+          api-token: ${{ secrets.SIGNPATH_API_TOKEN }}
+          organization-id: 'e4f8de42-d97c-409d-b768-ee383c34c15b'
+          project-slug: 'DeskBox'
+          signing-policy-slug: ${{ inputs.signing-policy }}
+          github-artifact-id: ${{ steps.upload-unsigned.outputs.artifact-id }}
+          wait-for-completion: true
+          output-artifact-directory: signed
+
+      - name: Upload signed installers
+        uses: actions/upload-artifact@v4
+        with:
+          name: signed-installers
+          if-no-files-found: error
+          retention-days: 14
+          path: signed
+
+  verify-signature:
+    name: Verify signed installers (Authenticode)
+    needs: sign
+    if: needs.sign.result == 'success'
+    runs-on: windows-latest
+    timeout-minutes: 10
+
+    steps:
+      - name: Download signed installers
+        uses: actions/download-artifact@v4
+        with:
+          name: signed-installers
+          path: signed
+
+      - name: Verify Authenticode signature, signer CN, and RFC3161 timestamp
+        shell: pwsh
+        run: |
+          $expectedCn = '${{ inputs.expected-signer-cn }}'
+          if ([string]::IsNullOrWhiteSpace($expectedCn)) { $expectedCn = 'DeskBox' }
+
+          $installers = @(Get-ChildItem -LiteralPath .\signed -Recurse -Filter 'DeskBox_Setup_*.exe' -File)
+          if ($installers.Count -ne 2) {
+            throw "Expected exactly 2 signed installers (x64 + ARM64); found $($installers.Count)."
+          }
+
+          foreach ($exe in $installers) {
+            $sig = Get-AuthenticodeSignature -LiteralPath $exe.FullName
+            Write-Host "=== $($exe.Name) ==="
+            Write-Host "Status        : $($sig.Status)"
+            Write-Host "StatusMessage : $($sig.StatusMessage)"
+            Write-Host "Signer        : $($sig.SignerCertificate.Subject)"
+            Write-Host "Timestamp     : $($sig.TimeStamperCertificate.Subject)"
+
+            if ($sig.Status -eq [System.Management.Automation.SignatureStatus]::NotSigned) {
+              throw "$($exe.Name): no Authenticode signature is embedded."
+            }
+            if ($sig.Status -notin @('Valid', 'UnknownError', 'UnknownIssuer')) {
+              throw "$($exe.Name): signature status '$($sig.Status)' not acceptable ($($sig.StatusMessage))."
+            }
+            if ($null -eq $sig.SignerCertificate) {
+              throw "$($exe.Name): signature present but SignerCertificate is null."
+            }
+            if ($sig.SignerCertificate.Subject -notlike "*$expectedCn*") {
+              throw "$($exe.Name): signer '$($sig.SignerCertificate.Subject)' does not contain '$expectedCn'."
+            }
+            if ($null -eq $sig.TimeStamperCertificate) {
+              throw "$($exe.Name): no RFC3161 timestamp certificate found."
+            }
+          }
+          Write-Host 'All signed installers passed Authenticode verification.'

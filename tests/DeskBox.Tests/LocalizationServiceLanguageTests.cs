@@ -14,6 +14,7 @@ public sealed class LocalizationServiceLanguageTests
         yield return [SettingsService.LanguageArabic, "ar"];
         yield return [SettingsService.LanguageBengali, "bn"];
         yield return [SettingsService.LanguageRussian, "ru"];
+        yield return [SettingsService.LanguageKorean, "ko"];
     }
 
     public static IEnumerable<object[]> SupportedLocaleTables()
@@ -29,6 +30,7 @@ public sealed class LocalizationServiceLanguageTests
         yield return ["ArSa"];
         yield return ["BnBd"];
         yield return ["RuRu"];
+        yield return ["KoKr"];
     }
 
     [Fact]
@@ -43,6 +45,7 @@ public sealed class LocalizationServiceLanguageTests
         Assert.Contains(SettingsService.LanguageArabic, localization.AvailableLanguageSettings);
         Assert.Contains(SettingsService.LanguageBengali, localization.AvailableLanguageSettings);
         Assert.Contains(SettingsService.LanguageRussian, localization.AvailableLanguageSettings);
+        Assert.Contains(SettingsService.LanguageKorean, localization.AvailableLanguageSettings);
     }
 
     [Theory]
@@ -71,6 +74,7 @@ public sealed class LocalizationServiceLanguageTests
             SettingsService.LanguageArabic => "ArSa",
             SettingsService.LanguageBengali => "BnBd",
             SettingsService.LanguageRussian => "RuRu",
+            SettingsService.LanguageKorean => "KoKr",
             _ => throw new ArgumentOutOfRangeException(nameof(language))
         });
 

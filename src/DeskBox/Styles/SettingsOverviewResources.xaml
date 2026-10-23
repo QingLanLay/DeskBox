@@ -34,6 +34,10 @@
         <Setter Property="TextWrapping" Value="Wrap" />
     </Style>
 
+    <!-- Retired with the hand-built drill-down rows (now native SettingsCards)
+         but kept as the SettingsCopyAndHierarchyTests anchor: its presence
+         pins the identity-spacing token while the usage-side assertions keep
+         the scaffolding pattern from coming back. -->
     <Style x:Key="SettingCardIdentityGridStyle" TargetType="Grid">
         <Setter Property="ColumnSpacing" Value="{StaticResource SettingsHeaderIconTextSpacing}" />
     </Style>
@@ -59,19 +63,24 @@
         <Setter Property="FontWeight" Value="SemiBold" />
     </Style>
 
-    <Style x:Key="DrillDownRowStyle" TargetType="Button">
-        <Setter Property="HorizontalAlignment" Value="Stretch" />
-        <Setter Property="HorizontalContentAlignment" Value="Stretch" />
-        <Setter Property="Padding" Value="{StaticResource SettingsRowPadding}" />
-        <Setter Property="MinHeight" Value="{StaticResource SettingsRowMinHeight}" />
-        <Setter Property="Background" Value="Transparent" />
-        <Setter Property="BorderBrush" Value="Transparent" />
-        <Setter Property="BorderThickness" Value="0" />
-        <Setter Property="CornerRadius" Value="{StaticResource SettingsCardCornerRadius}" />
-        <Setter Property="VerticalAlignment" Value="Stretch" />
+    <Style x:Key="ActionButtonStyle" TargetType="Button">
+        <Setter Property="MinHeight" Value="34" />
+        <Setter Property="Height" Value="34" />
+        <Setter Property="MinWidth" Value="104" />
+        <Setter Property="Padding" Value="12,0" />
+        <Setter Property="CornerRadius" Value="6" />
     </Style>
 
-    <Style x:Key="ActionButtonStyle" TargetType="Button">
+    <!-- Destructive counterpart of ActionButtonStyle: same metrics, Fluent
+         critical foreground on the default subtle button chrome (matches
+         WidgetDangerActionStyle and the widget title-bar close button). -->
+    <Style x:Key="DangerActionButtonStyle" TargetType="Button" BasedOn="{StaticResource ActionButtonStyle}">
+        <Setter Property="Foreground" Value="{ThemeResource SystemFillColorCriticalBrush}" />
+    </Style>
+
+    <!-- Accent counterpart of ActionButtonStyle: same metrics so paired
+         accent+plain buttons in one row stay height-aligned. -->
+    <Style x:Key="AccentActionButtonStyle" TargetType="Button" BasedOn="{StaticResource AccentButtonStyle}">
         <Setter Property="MinHeight" Value="34" />
         <Setter Property="Height" Value="34" />
         <Setter Property="MinWidth" Value="104" />

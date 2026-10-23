@@ -3,6 +3,7 @@
     x:Class="DeskBox.Controls.WidgetContents.WeatherWidgetContent"
     xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
     xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+    xmlns:helpers="using:DeskBox.Helpers"
     xmlns:d="http://schemas.microsoft.com/expression/blend/2008"
     xmlns:local="using:DeskBox.Controls.WidgetContents"
     xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
@@ -131,7 +132,7 @@
                         ToolTipService.ToolTip="{Binding LocationFallbackTooltip}"
                         Visibility="{Binding LocationFallbackVisibility}" />
                 </StackPanel>
-                <Button
+                <Button AutomationProperties.Name="{Binding RefreshTooltip}"
                     Grid.Column="1"
                     Width="20"
                     Height="20"
@@ -225,7 +226,7 @@
                         ToolTipService.ToolTip="{Binding LocationFallbackTooltip}"
                         Visibility="{Binding LocationFallbackVisibility}" />
                 </StackPanel>
-                <Button
+                <Button AutomationProperties.Name="{Binding RefreshTooltip}"
                     Grid.Column="1"
                     Width="24"
                     Height="24"
@@ -441,7 +442,7 @@
                     </toolkit:SegmentedItem>
                 </toolkit:Segmented>
 
-                <Button
+                <Button AutomationProperties.Name="{Binding RefreshTooltip}"
                     Grid.Column="2"
                     Click="RefreshButton_Click"
                     Style="{StaticResource WeatherIconButtonStyle}"
@@ -740,6 +741,7 @@
                                             <RowDefinition Height="7" />
                                         </Grid.RowDefinitions>
                                         <TextBlock
+                                            helpers:WidgetTextShadow.Cast="True"
                                             x:Name="HourlyHourText"
                                             Grid.Row="0"
                                             HorizontalAlignment="Center"
@@ -756,6 +758,7 @@
                                             Source="{Binding Icon}"
                                             Stretch="Uniform" />
                                         <TextBlock
+                                            helpers:WidgetTextShadow.Cast="True"
                                             x:Name="HourlyTemperatureText"
                                             Grid.Row="2"
                                             HorizontalAlignment="Center"
@@ -763,6 +766,7 @@
                                             FontWeight="SemiBold"
                                             Text="{Binding TemperatureText}" />
                                         <TextBlock
+                                            helpers:WidgetTextShadow.Cast="True"
                                             Grid.Row="3"
                                             HorizontalAlignment="Center"
                                             FontSize="{x:Bind ForecastHourTextSize, Mode=OneWay}"
@@ -826,6 +830,7 @@
                                             <ColumnDefinition Width="Auto" />
                                         </Grid.ColumnDefinitions>
                                         <TextBlock
+                                            helpers:WidgetTextShadow.Cast="True"
                                             x:Name="DailyDayText"
                                             Grid.Column="0"
                                             VerticalAlignment="Center"
@@ -861,6 +866,7 @@
                                             </Border>
                                         </Grid>
                                         <TextBlock
+                                            helpers:WidgetTextShadow.Cast="True"
                                             x:Name="DailyMaxText"
                                             Grid.Column="4"
                                             VerticalAlignment="Center"
@@ -868,6 +874,7 @@
                                             FontWeight="SemiBold"
                                             Text="{Binding TempMaxText}" />
                                         <TextBlock
+                                            helpers:WidgetTextShadow.Cast="True"
                                             x:Name="DailyMinText"
                                             Grid.Column="5"
                                             VerticalAlignment="Center"
@@ -918,6 +925,49 @@
                     FontSize="{x:Bind ViewModel.BodyTextSize, Mode=OneWay}"
                     Foreground="{ThemeResource TextFillColorSecondaryBrush}"
                     Text="{Binding LoadingText}" />
+            </StackPanel>
+        </Grid>
+
+        <!-- First-load failure overlay: same covering layer as LoadingOverlay
+             so the widget never changes height; auto-retry (IsRefreshing) and
+             recovery (HasData) both retire it through ErrorVisibility. The
+             cover and texts pass input through (like LoadingOverlay) so the
+             header stays operable; only the retry button is interactive. -->
+        <Grid x:Name="ErrorOverlay" Visibility="{Binding ErrorVisibility}">
+            <Border
+                Background="{ThemeResource LayerFillColorDefaultBrush}"
+                IsHitTestVisible="False" />
+            <StackPanel
+                HorizontalAlignment="Center"
+                VerticalAlignment="Center"
+                Spacing="8">
+                <FontIcon
+                    HorizontalAlignment="Center"
+                    IsHitTestVisible="False"
+                    FontSize="24"
+                    Foreground="{ThemeResource TextFillColorSecondaryBrush}"
+                    Glyph="&#xE7BA;" />
+                <TextBlock
+                    HorizontalAlignment="Center"
+                    IsHitTestVisible="False"
+                    FontSize="{x:Bind ViewModel.BodyTextSize, Mode=OneWay}"
+                    FontWeight="SemiBold"
+                    Foreground="{ThemeResource TextFillColorPrimaryBrush}"
+                    Text="{Binding ErrorTitle}" />
+                <TextBlock
+                    HorizontalAlignment="Center"
+                    IsHitTestVisible="False"
+                    FontSize="{x:Bind ViewModel.BodyTextSize, Mode=OneWay}"
+                    Foreground="{ThemeResource TextFillColorSecondaryBrush}"
+                    MaxLines="2"
+                    Text="{Binding ErrorBody}"
+                    TextAlignment="Center"
+                    TextTrimming="CharacterEllipsis"
+                    TextWrapping="Wrap" />
+                <Button
+                    HorizontalAlignment="Center"
+                    Click="RefreshButton_Click"
+                    Content="{Binding ErrorRetryText}" />
             </StackPanel>
         </Grid>
     </Grid>

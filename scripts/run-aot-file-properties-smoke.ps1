@@ -519,7 +519,7 @@ try {
         -Name "visibleWidgetKinds"
     if ([int]$smokeResult.loadedSurfaceCount -ne 2 -or
         [int]$smokeResult.visibleSurfaceCount -ne 2 -or
-        @($smokeResult.locales).Count -ne 12) {
+        @($smokeResult.locales).Count -ne 13) {
         throw "File Properties smoke did not restore its two real widget surfaces and locale baseline."
     }
 
@@ -581,9 +581,9 @@ try {
             [long]$dialog.rootOwnerWindowHandle -or
         -not [bool]$dialog.rootOwner.isWindow -or
         [string]$dialog.className -cne "#32770" -or
-        -not ([string]$dialog.title).Contains(
+        -not (([string]$dialog.title).IndexOf(
             $targetName,
-            [System.StringComparison]::OrdinalIgnoreCase) -or
+            [System.StringComparison]::OrdinalIgnoreCase) -ge 0) -or
         -not [bool]$dialog.visibleBeforeClose -or
         -not [bool]$dialog.closePosted -or
         -not [bool]$dialog.windowDestroyedAfterClose) {

@@ -321,15 +321,11 @@ public sealed partial class FileService
         public IReadOnlyList<FileTransferResult> CompletedResults { get; }
     }
 
-    private const uint FoMove = 0x0001;
     private const uint FoDelete = 0x0003;
-    private const ushort FofNoConfirmMkDir = 0x0200;
     private const ushort FofAllowUndo = 0x0040;
     private const ushort FofNoConfirmation = 0x0010;
     private const ushort FofNoErrorUi = 0x0400;
     private const ushort FofSilent = 0x0004;
-    private static readonly TimeSpan ShellMoveRecoveryProbeDelay =
-        TimeSpan.FromSeconds(15);
 
     public FileService(LocalizationService? localizationService = null)
     {
@@ -637,18 +633,9 @@ public sealed partial class FileService
 
         try
         {
-            string name = Path.GetFileName(normalizedPath);
-            System.IO.FileAttributes attributes = File.GetAttributes(normalizedPath);
-            // Stale Steam game shortcuts (.url whose game is uninstalled) are
-            // deliberately NOT filtered: opening them launches Steam's install
-            // flow, so they remain useful and must stay visible in the box.
-            if (name.Equals("desktop.ini", StringComparison.OrdinalIgnoreCase) ||
-                (attributes & System.IO.FileAttributes.Hidden) != 0)
-            {
-                return FolderEntryRefreshStatus.Filtered;
-            }
-
-            return FolderEntryRefreshStatus.Available;
+            return ClassifyExistingEntry(
+                Path.GetFileName(normalizedPath),
+                File.GetAttributes(normalizedPath));
         }
         catch (UnauthorizedAccessException)
         {
@@ -664,6 +651,90 @@ public sealed partial class FileService
             // now be read is a race/provider failure, not proof of deletion.
             return FolderEntryRefreshStatus.Unavailable;
         }
+    }
+
+    /// <summary>
+    /// Classifies one direct child against the live file system with a single
+    /// stat, replacing the per-batch full-root enumeration the incremental
+    /// refresh path used to pay. A missing final path component is the same
+    /// deletion proof the complete-parent snapshot provided; a missing
+    /// ancestor directory stays Unavailable so an offline watched root can
+    /// never be read as a mass deletion of its children.
+    /// </summary>
+    internal static FolderEntryRefreshStatus ClassifyDirectChild(string path)
+    {
+        string normalizedPath;
+        try
+        {
+            normalizedPath = Path.GetFullPath(path);
+        }
+        catch
+        {
+            return FolderEntryRefreshStatus.Unavailable;
+        }
+
+        try
+        {
+            return ClassifyExistingEntry(
+                Path.GetFileName(normalizedPath),
+                File.GetAttributes(normalizedPath));
+        }
+        catch (FileNotFoundException)
+        {
+            // The leaf entry itself is gone while its parent enumerated - the
+            // per-path equivalent of "absent from a complete snapshot".
+            return FolderEntryRefreshStatus.NotFound;
+        }
+        catch (DirectoryNotFoundException)
+        {
+            return FolderEntryRefreshStatus.Unavailable;
+        }
+        catch (UnauthorizedAccessException)
+        {
+            return FolderEntryRefreshStatus.AccessDenied;
+        }
+        catch (System.Security.SecurityException)
+        {
+            return FolderEntryRefreshStatus.AccessDenied;
+        }
+        catch (IOException)
+        {
+            // A path that cannot be read right now is a race/provider failure,
+            // not proof of deletion - the same contract as the snapshot-based
+            // classification.
+            return FolderEntryRefreshStatus.Unavailable;
+        }
+    }
+
+    /// <summary>
+    /// Runs the shared display-filter classification over an entry whose
+    /// attributes were just read successfully.
+    /// </summary>
+    private static FolderEntryRefreshStatus ClassifyExistingEntry(
+        string name,
+        System.IO.FileAttributes attributes)
+    {
+        // Stale Steam game shortcuts (.url whose game is uninstalled) are
+        // deliberately NOT filtered: opening them launches Steam's install
+        // flow, so they remain useful and must stay visible in the box.
+        if (name.Equals("desktop.ini", StringComparison.OrdinalIgnoreCase) ||
+            (attributes & System.IO.FileAttributes.Hidden) != 0)
+        {
+            return FolderEntryRefreshStatus.Filtered;
+        }
+
+        return FolderEntryRefreshStatus.Available;
+    }
+
+    /// <summary>
+    /// Async wrapper for <see cref="ClassifyDirectChild(string)"/>: the stat
+    /// is blocking I/O and the refresh pipeline awaits it from the UI thread,
+    /// so it hops to the thread pool exactly like the snapshot enumeration it
+    /// replaced.
+    /// </summary>
+    internal static Task<FolderEntryRefreshStatus> ClassifyDirectChildAsync(string path)
+    {
+        return Task.Run(() => ClassifyDirectChild(path));
     }
 
     /// <summary>
@@ -730,6 +801,11 @@ public sealed partial class FileService
                 entry.Path,
                 hideShortcutArrowOverlay,
                 showImageFilesAsIcons);
+            if (item.Icon is not null)
+            {
+                item.HydratedIconFileSize = item.FileSize;
+                item.HydratedIconStamp = item.LastModified;
+            }
         }
 
         return item;
@@ -894,24 +970,33 @@ public sealed partial class FileService
             : nameWithoutExtension;
     }
 
-    public Task<BitmapImage?> GetIconAsync(
+    public async Task<BitmapImage?> GetIconAsync(
         string path,
         bool hideShortcutArrowOverlay = false,
         bool showImageFilesAsIcons = false,
         int decodePixelWidth = 0)
     {
-        string iconPath = path;
-        if (!ShortcutHelper.IsShortcutPath(path) &&
-            TryResolveExistingPathForTraversal(path, out string resolvedPath))
+        // Traversal resolution touches the disk once per path segment
+        // (junction/reparse correctness for mapped folders). Hydration
+        // batches call this synchronously up to the first await, so the
+        // resolution used to run on the UI thread — a network round trip
+        // per segment on UNC volumes. Keep it on the thread pool.
+        string iconPath = await Task.Run(() =>
         {
-            iconPath = resolvedPath;
-        }
+            if (!ShortcutHelper.IsShortcutPath(path) &&
+                TryResolveExistingPathForTraversal(path, out string resolvedPath))
+            {
+                return resolvedPath;
+            }
 
-        return IconHelper.GetIconAsync(
+            return path;
+        }).ConfigureAwait(false);
+
+        return await IconHelper.GetIconAsync(
             iconPath,
             hideShortcutArrowOverlay,
             showImageFilesAsIcons,
-            decodePixelWidth);
+            decodePixelWidth).ConfigureAwait(false);
     }
 
     public void ClearIconCache(
@@ -935,6 +1020,34 @@ public sealed partial class FileService
                 showImageFilesAsIcons,
                 resetTransientFailures);
         }
+    }
+
+    /// <summary>
+    /// Thread-pool variant for callers inside hydration pipelines: the
+    /// junction-aware double clear resolves path segments synchronously,
+    /// which must not occupy the UI thread per retry round.
+    /// </summary>
+    public Task ClearIconCacheAsync(
+        string path,
+        bool hideShortcutArrowOverlay = false,
+        bool showImageFilesAsIcons = false,
+        bool resetTransientFailures = true)
+    {
+        return Task.Run(() => ClearIconCache(
+            path,
+            hideShortcutArrowOverlay,
+            showImageFilesAsIcons,
+            resetTransientFailures));
+    }
+
+    /// <summary>
+    /// Resets icon retry-state markers without releasing caches; used by
+    /// recovery refreshes that no longer blanket-clear icons (the freshness
+    /// ledger at the refresh merge owns invalidation instead).
+    /// </summary>
+    public void ResetIconTransientFailures()
+    {
+        IconHelper.ResetTransientFailures();
     }
 
     public async Task<string> GetStoredShortcutTargetAsync(string shortcutPath)
@@ -1484,46 +1597,26 @@ public sealed partial class FileService
 
         if (useShellProgress && onItemError is null)
         {
-#if !DESKBOX_NATIVE_AOT
             // Interactive imports use the modern Windows Shell operation on a
-            // dedicated STA thread. It owns enumeration, conflicts, errors,
-            // cancellation and the native progress window for both copy and
-            // move operations. A caller that asked for per-item error
-            // decisions must stay on the managed engine — Shell transfers
-            // cannot surface them.
+            // dedicated STA thread with the 45 s inactivity watchdog. It owns
+            // enumeration, conflicts, errors, cancellation and the native
+            // progress window for both copy and move operations, on every
+            // build channel and volume relationship. The legacy
+            // SHFileOperation bridge for AOT same-volume moves was retired
+            // (2026-10-13): it ran on an unpumped MTA thread-pool thread with
+            // no watchdog, which could hang a same-volume paste forever.
+            // User-cancelled shell transfers surface as
+            // FileTransferCanceledException carrying the completed set —
+            // callers turn that into the same partial-count feedback the
+            // legacy silent return used to produce. A caller that asked for
+            // per-item error decisions must stay on the managed engine —
+            // Shell transfers cannot surface them.
             return await ExecuteModernShellTransferPlanAsync(
                 operations,
                 move,
                 ownerWindowHandle,
                 progress,
                 cancellationToken);
-#else
-            // The Native AOT profile keeps the legacy SHFileOperation bridge
-            // for same-volume moves: its partial/cancel/late-return contract
-            // is pinned by the AOT managed-UI smoke matrix. Everything else —
-            // cross-volume moves and copies — uses the modern IFileOperation
-            // engine. Only that engine can surface the Shell's elevation and
-            // per-item error UI, which readable-but-not-deletable sources
-            // (e.g. Public Desktop shortcuts) need when the host runs
-            // unelevated; the managed engine instead fails with a raw
-            // access-denied error.
-            if (move && CanUseLegacyShellMove(operations.Select(operation =>
-                    new FileTransferPlan(
-                        operation.SourcePath,
-                        operation.DestinationPath))))
-            {
-                return await ExecuteShellMovePlanAsync(
-                    operations,
-                    ownerWindowHandle);
-            }
-
-            return await ExecuteModernShellTransferPlanAsync(
-                operations,
-                move,
-                ownerWindowHandle,
-                progress,
-                cancellationToken);
-#endif
         }
 
         if (progress is not null || cancellationToken.CanBeCanceled ||
@@ -1621,164 +1714,11 @@ public sealed partial class FileService
             .ToList();
     }
 
-    private async Task<IReadOnlyList<FileTransferResult>> ExecuteShellMovePlanAsync(
-        IReadOnlyList<TransferOperation> operations,
-        IntPtr ownerWindowHandle)
-    {
-        if (operations.Count == 0)
-        {
-            return [];
-        }
-
-        foreach (var operation in operations)
-        {
-            await Task.Run(() => EnsureSafeDirectoryTransfers([operation]));
-            string? destinationDirectory = Path.GetDirectoryName(operation.DestinationPath);
-            if (!string.IsNullOrWhiteSpace(destinationDirectory))
-            {
-                await Task.Run(() => Directory.CreateDirectory(destinationDirectory));
-            }
-        }
-
-        var stopwatch = Stopwatch.StartNew();
-        FileTransferPlan[] shellPlans = operations
-            .Select(operation => new FileTransferPlan(
-                operation.SourcePath,
-                operation.DestinationPath))
-            .ToArray();
-        TimeSpan recoveryProbeDelay = ShellMoveRecoveryProbeDelay;
-#if DESKBOX_NATIVE_AOT && DESKBOX_AOT_SMOKE_HARNESS
-        recoveryProbeDelay = AotShellMoveFixture.GetRecoveryProbeDelay(
-            shellPlans,
-            recoveryProbeDelay);
-#endif
-        App.Log(
-            $"[FileTransfer] Shell move start count={operations.Count} " +
-            $"owner=0x{ownerWindowHandle.ToInt64():X}");
-
-        Task shellMoveTask = Task.Run(() =>
-        {
-            EnsureSafeDirectoryTransfers(operations);
-#if DESKBOX_NATIVE_AOT && DESKBOX_AOT_SMOKE_HARNESS
-            if (AotShellMoveFixture.TryExecute(
-                    shellPlans,
-                    ownerWindowHandle,
-                    () => MoveEntriesWithShellProgress(
-                        operations,
-                        ownerWindowHandle)))
-            {
-                return;
-            }
-#endif
-            MoveEntriesWithShellProgress(
-                operations,
-                ownerWindowHandle);
-        });
-
-        Task firstCompletion = await Task.WhenAny(
-            shellMoveTask,
-            Task.Delay(recoveryProbeDelay));
-        if (ReferenceEquals(firstCompletion, shellMoveTask))
-        {
-            await shellMoveTask;
-#if DESKBOX_NATIVE_AOT && DESKBOX_AOT_SMOKE_HARNESS
-            AotShellMoveFixture.RecordFileServiceOutcome(
-                shellPlans,
-                AotShellMoveFixture.ReturnedOutcome);
-#endif
-            App.Log(
-                $"[FileTransfer] Shell move returned count={operations.Count} " +
-                $"elapsedMs={stopwatch.ElapsedMilliseconds}");
-        }
-        else
-        {
-            bool allCompleted = await Task.Run(() =>
-                AreAllShellMovesCompleted(operations.Select(operation =>
-                    new FileTransferPlan(
-                        operation.SourcePath,
-                        operation.DestinationPath))));
-            if (allCompleted)
-            {
-                // Some shell extensions finish the filesystem move but leave
-                // SHFileOperation waiting on hidden bookkeeping/UI. The import
-                // must not keep covering the widget once every requested move
-                // is already complete. Observe the late task so any eventual
-                // failure is logged instead of becoming unobserved.
-                App.Log(
-                    $"[FileTransfer] Shell move recovered from pending call " +
-                    $"count={operations.Count} elapsedMs={stopwatch.ElapsedMilliseconds}");
-#if DESKBOX_NATIVE_AOT && DESKBOX_AOT_SMOKE_HARNESS
-                AotShellMoveFixture.RecordFileServiceOutcome(
-                    shellPlans,
-                    AotShellMoveFixture.RecoveredPendingOutcome);
-#endif
-                _ = ObserveLateShellMoveCompletionAsync(
-                    shellMoveTask,
-                    operations.Count,
-                    stopwatch);
-            }
-            else
-            {
-                App.Log(
-                    $"[FileTransfer] Shell move still active count={operations.Count} " +
-                    $"elapsedMs={stopwatch.ElapsedMilliseconds} " +
-                    $"owner=0x{ownerWindowHandle.ToInt64():X}");
-                await shellMoveTask;
-#if DESKBOX_NATIVE_AOT && DESKBOX_AOT_SMOKE_HARNESS
-                AotShellMoveFixture.RecordFileServiceOutcome(
-                    shellPlans,
-                    AotShellMoveFixture.ExtendedWaitOutcome);
-#endif
-                App.Log(
-                    $"[FileTransfer] Shell move returned after extended wait " +
-                    $"count={operations.Count} elapsedMs={stopwatch.ElapsedMilliseconds}");
-            }
-        }
-
-        return await Task.Run(() => operations
-            .Where(operation => IsCompletedShellMove(
-                operation.SourcePath,
-                operation.DestinationPath))
-            .Select(operation => new FileTransferResult(operation.SourcePath, operation.DestinationPath))
-            .ToList());
-    }
-
-    private static async Task ObserveLateShellMoveCompletionAsync(
-        Task shellMoveTask,
-        int operationCount,
-        Stopwatch stopwatch)
-    {
-        try
-        {
-            await shellMoveTask.ConfigureAwait(false);
-            App.Log(
-                $"[FileTransfer] Pending shell move call eventually returned " +
-                $"count={operationCount} elapsedMs={stopwatch.ElapsedMilliseconds}");
-        }
-        catch (Exception ex)
-        {
-            App.Log(
-                $"[FileTransfer] Pending shell move call failed after filesystem " +
-                $"completion count={operationCount} " +
-                $"elapsedMs={stopwatch.ElapsedMilliseconds}: {ex}");
-        }
-    }
-
     internal static bool IsCompletedShellMove(string sourcePath, string destinationPath)
     {
         return (File.Exists(destinationPath) || Directory.Exists(destinationPath)) &&
                !File.Exists(sourcePath) &&
                !Directory.Exists(sourcePath);
-    }
-
-    internal static bool AreAllShellMovesCompleted(
-        IEnumerable<FileTransferPlan> plans)
-    {
-        FileTransferPlan[] materialized = plans.ToArray();
-        return materialized.Length > 0 &&
-               materialized.All(plan => IsCompletedShellMove(
-                   plan.SourcePath,
-                   plan.DestinationPath));
     }
 
     /// <summary>
@@ -1839,7 +1779,54 @@ public sealed partial class FileService
         }
 
         return await Task.Run(() =>
-            DeleteEntryWithShell(normalizedPath, ownerHandle, allowUndo: true));
+        {
+            if (ownerHandle == IntPtr.Zero && IsNetworkVolumePath(normalizedPath))
+            {
+                // FOF_ALLOWUNDO degrades to a silent permanent delete on
+                // volumes without a client-side Recycle Bin. A headless
+                // caller cannot consent to that, so refuse instead: callers
+                // treat false as "not deleted" and may retry with an owner
+                // window for the interactive Shell confirmation.
+                App.Log(
+                    $"[FileService] Refused headless recycle on a network volume: '{normalizedPath}'");
+                return false;
+            }
+
+            return DeleteEntryWithShell(normalizedPath, ownerHandle, allowUndo: true);
+        });
+    }
+
+    /// <summary>
+    /// True when the path sits on a network volume (UNC share or mapped
+    /// network drive) — i.e. a volume where FOF_ALLOWUNDO cannot guarantee
+    /// a Recycle Bin and a "recycle" silently becomes a permanent delete.
+    /// Detection failures deliberately report false: the caller falls back
+    /// to the pre-existing behavior rather than blocking routine deletes.
+    /// </summary>
+    internal static bool IsNetworkVolumePath(string path)
+    {
+        try
+        {
+            string fullPath = Path.GetFullPath(path);
+            if (fullPath.StartsWith(@"\\", StringComparison.Ordinal))
+            {
+                return true;
+            }
+
+            string root = Path.GetPathRoot(fullPath) ?? string.Empty;
+            if (string.IsNullOrWhiteSpace(root) ||
+                root.Length < 2 ||
+                root[1] != Path.VolumeSeparatorChar)
+            {
+                return false;
+            }
+
+            return new DriveInfo(root).DriveType == DriveType.Network;
+        }
+        catch
+        {
+            return false;
+        }
     }
 
     /// <summary>
@@ -1967,114 +1954,6 @@ public sealed partial class FileService
                 return completedPaths;
             }
         }
-    }
-
-    private static void MoveEntriesWithShellProgress(
-        IReadOnlyList<TransferOperation> operations,
-        IntPtr ownerWindowHandle)
-    {
-        if (TryMoveEntriesToSameFolderWithShellProgress(
-                operations,
-                ownerWindowHandle))
-        {
-            return;
-        }
-
-        foreach (var operation in operations)
-        {
-            string from = operation.SourcePath + "\0\0";
-            string to = operation.DestinationPath + "\0\0";
-            unsafe
-            {
-                fixed (char* fromPointer = from)
-                fixed (char* toPointer = to)
-                {
-                    var fileOperation = new FileTransferNativeMethods.ShFileOperation
-                    {
-                        WindowHandle = ownerWindowHandle,
-                        Function = FoMove,
-                        From = fromPointer,
-                        To = toPointer,
-                        // Omitting the confirmation-suppression flag lets the
-                        // Shell own the name-conflict dialog (Replace/Keep
-                        // both) instead of silently overwriting on a
-                        // plan/execute race.
-                        Flags = FofNoConfirmMkDir |
-                                FofNoErrorUi
-                    };
-
-                    int result = FileTransferNativeMethods.SHFileOperation(ref fileOperation);
-                    if (result == 1223 || fileOperation.AnyOperationsAborted != 0)
-                    {
-                        return;
-                    }
-
-                    if (result != 0 && result != 1223)
-                    {
-                        throw new Win32Exception(result);
-                    }
-                }
-            }
-        }
-    }
-
-    private static bool TryMoveEntriesToSameFolderWithShellProgress(
-        IReadOnlyList<TransferOperation> operations,
-        IntPtr ownerWindowHandle)
-    {
-        if (operations.Count == 0)
-        {
-            return true;
-        }
-
-        string? destinationFolder = Path.GetDirectoryName(operations[0].DestinationPath);
-        if (string.IsNullOrWhiteSpace(destinationFolder))
-        {
-            return false;
-        }
-
-        if (operations.Any(operation =>
-                !string.Equals(Path.GetDirectoryName(operation.DestinationPath), destinationFolder, StringComparison.OrdinalIgnoreCase) ||
-                !string.Equals(
-                    Path.GetFileName(operation.SourcePath),
-                    Path.GetFileName(operation.DestinationPath),
-                    StringComparison.OrdinalIgnoreCase)))
-        {
-            return false;
-        }
-
-        string from = string.Join('\0', operations.Select(operation => operation.SourcePath)) + "\0\0";
-        string to = destinationFolder + "\0\0";
-        unsafe
-        {
-            fixed (char* fromPointer = from)
-            fixed (char* toPointer = to)
-            {
-                var fileOperation = new FileTransferNativeMethods.ShFileOperation
-                {
-                    WindowHandle = ownerWindowHandle,
-                    Function = FoMove,
-                    From = fromPointer,
-                    To = toPointer,
-                    // Same as above: keep the Shell conflict dialog available.
-                    Flags = FofNoConfirmMkDir |
-                            FofNoErrorUi
-                };
-
-                int result = FileTransferNativeMethods.SHFileOperation(ref fileOperation);
-                if (result == 1223 || fileOperation.AnyOperationsAborted != 0)
-                {
-                    return true;
-                }
-
-                if (result != 0 && result != 1223)
-                {
-                    throw new Win32Exception(result);
-                }
-            }
-        }
-
-        return true;
     }
 
     /// <summary>
@@ -2931,15 +2810,31 @@ public sealed partial class FileService
     }
 
     /// <summary>
-    /// Show a file in Windows Explorer with it selected.
+    /// Show a file in Windows Explorer with it selected. On a shortcut,
+    /// "open file location" means the TARGET's folder (like the native
+    /// menu); unresolvable targets — url shortcuts, broken links, shell
+    /// namespace items — fall back to the shortcut's own folder.
     /// </summary>
     public static void ShowInExplorer(WidgetItem item)
     {
         var path = item.Path;
-        if (!string.IsNullOrEmpty(path))
+        if (string.IsNullOrEmpty(path))
         {
-            Win32Helper.ShowInExplorer(path);
+            return;
         }
+
+        if (ShortcutHelper.IsShortcutPath(path))
+        {
+            string? target = ShortcutHelper.Resolve(path)?.TargetPath;
+            if (!string.IsNullOrEmpty(target) &&
+                (File.Exists(target) || Directory.Exists(target)))
+            {
+                Win32Helper.ShowInExplorer(target);
+                return;
+            }
+        }
+
+        Win32Helper.ShowInExplorer(path);
     }
 
     public enum OpenItemResult

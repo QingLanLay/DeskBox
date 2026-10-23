@@ -12,6 +12,43 @@ public sealed class OrganizerService
     private readonly DesktopOrganizationRecoveryStore _sharedRecoveryStore;
     private readonly Func<string> _desktopPathProvider;
     private readonly DesktopAutoOrganizationSuppressionRegistry _autoOrganizationSuppressions;
+
+    /// <summary>
+    /// The widget's mapped folder (or the destination folder inside it) is
+    /// missing or on an offline drive. Inherits DirectoryNotFoundException so
+    /// background consumers — the auto-organization watcher's storage
+    /// recovery catch — classify it as recoverable unavailability instead of
+    /// spending finite retry budget. The English message is a log diagnostic;
+    /// user-facing copy comes from Widget.Import.MappedFolderUnavailable.
+    /// </summary>
+    public sealed class MappedFolderUnavailableException : DirectoryNotFoundException
+    {
+        internal MappedFolderUnavailableException(string path)
+            : base($"The mapped folder is unavailable: '{path}'.")
+            => Path = path;
+
+        public string Path { get; }
+    }
+
+    /// <summary>
+    /// The drop destination resolved outside the widget's mapped folder.
+    /// Inherits InvalidOperationException — the request is invalid for the
+    /// widget's current state, the storage itself is not broken — which also
+    /// keeps existing callers that catch InvalidOperationException working.
+    /// The English message is a log diagnostic; user-facing copy comes from
+    /// Widget.Import.DestinationOutsideMappedRoot.
+    /// </summary>
+    public sealed class DestinationOutsideMappedRootException : InvalidOperationException
+    {
+        internal DestinationOutsideMappedRootException(string destinationPath, string mappedRootPath)
+            : base("The requested destination is outside the widget's mapped folder.")
+            => (DestinationPath, MappedRootPath) = (destinationPath, mappedRootPath);
+
+        public string DestinationPath { get; }
+
+        public string MappedRootPath { get; }
+    }
+
     private sealed record DropPreparation(
         string RootPath,
         IReadOnlyList<string> SourcePaths);
@@ -219,15 +256,18 @@ public sealed class OrganizerService
         string rootPath = string.IsNullOrWhiteSpace(destinationFolderPath)
             ? mappedRootPath
             : Path.GetFullPath(destinationFolderPath);
-        if (!Directory.Exists(rootPath) ||
-            !FileService.TryIsPathUnderDirectoryResolved(
+        if (!Directory.Exists(rootPath))
+        {
+            throw new MappedFolderUnavailableException(rootPath);
+        }
+
+        if (!FileService.TryIsPathUnderDirectoryResolved(
                 rootPath,
                 mappedRootPath,
                 out bool isUnderMappedRoot) ||
             !isUnderMappedRoot)
         {
-            throw new InvalidOperationException(
-                "The requested destination is outside the widget's mapped folder.");
+            throw new DestinationOutsideMappedRootException(rootPath, mappedRootPath);
         }
 
         string[] normalizedSourcePaths = sourcePaths
@@ -375,11 +415,19 @@ public sealed class OrganizerService
                     canUndo: true));
             }
 
-            string[] failedPaths = normalizedSourcePaths
-                .Except(
-                    completed.Select(result => result.SourcePath),
-                    StringComparer.OrdinalIgnoreCase)
-                .ToArray();
+            // A user-cancelled Shell transfer is not a failure: whatever
+            // did not move was declined in the Shell's own dialog, not
+            // lost. Record only the completed set; the retired legacy
+            // bridge recorded nothing for cancelled remainder either.
+            bool userCancelledShellTransfer =
+                ex is FileService.FileTransferCanceledException;
+            string[] failedPaths = userCancelledShellTransfer
+                ? []
+                : normalizedSourcePaths
+                    .Except(
+                        completed.Select(result => result.SourcePath),
+                        StringComparer.OrdinalIgnoreCase)
+                    .ToArray();
             if (failedPaths.Length > 0)
             {
                 await AddHistoryEntryAsync(CreateFailureEntry(

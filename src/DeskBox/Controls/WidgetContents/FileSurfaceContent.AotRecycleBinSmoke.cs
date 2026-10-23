@@ -42,20 +42,17 @@ public sealed partial class FileSurfaceContent
             ? CreateMultiSelectionFlyout()
             : CreateItemFlyout(selectedItems[0]);
         string deleteText = T("Widget.MoveToRecycleBin");
-        MenuFlyoutItem deleteItem = flyout.Items
-            .OfType<MenuFlyoutItem>()
-            .Single(item => string.Equals(
-                item.Text,
-                deleteText,
-                StringComparison.Ordinal));
-        int deleteIndex = flyout.Items.IndexOf(deleteItem);
-        var menuItems = flyout.Items
-            .Select((item, index) => new AotRecycleBinMenuItemSnapshot(
-                index,
-                item.GetType().Name,
-                item is MenuFlyoutItem menuItem ? menuItem.Text : string.Empty,
-                item is not MenuFlyoutItem enabledItem || enabledItem.IsEnabled,
-                ReferenceEquals(item, deleteItem)))
+        MenuFlyoutItem deleteItem = AotContextMenuProbe.FindItem(
+            flyout,
+            deleteText);
+        int deleteIndex = AotContextMenuProbe.IndexOf(flyout, deleteItem);
+        var menuItems = AotContextMenuProbe.Snapshot(flyout, deleteItem)
+            .Select(entry => new AotRecycleBinMenuItemSnapshot(
+                entry.Index,
+                entry.ItemType,
+                entry.Text,
+                entry.IsEnabled,
+                entry.IsTarget))
             .ToArray();
 
         if (!deleteItem.IsEnabled ||
@@ -85,14 +82,8 @@ public sealed partial class FileSurfaceContent
         FeedbackRequested += OnFeedbackRequested;
         try
         {
-            var peer = new MenuFlyoutItemAutomationPeer(deleteItem);
-            if (peer.GetPattern(PatternInterface.Invoke) is not
-                IInvokeProvider invokeProvider)
-            {
-                throw new InvalidOperationException(
-                    "The product Recycle Bin menu item did not expose Invoke automation.");
-            }
-
+            IInvokeProvider invokeProvider =
+                AotContextMenuProbe.InvokeProvider(deleteItem);
             invokeProvider.Invoke();
             Task completed = await Task.WhenAny(
                 feedbackCompletion.Task,
@@ -108,7 +99,7 @@ public sealed partial class FileSurfaceContent
                 expectMultiSelection,
                 requestedNames,
                 selectedItems.Select(item => item.Path).ToArray(),
-                flyout.Items.Count,
+                AotContextMenuProbe.Count(flyout),
                 deleteIndex,
                 deleteItem.Text,
                 deleteItem.IsEnabled,

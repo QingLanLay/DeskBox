@@ -1,3 +1,4 @@
+using System.Collections.Frozen;
 using System.Diagnostics;
 using System.Globalization;
 using System.Runtime.CompilerServices;
@@ -17,6 +18,28 @@ internal static class Program
 {
     private const int InstallRegistrationMismatchExitCode = 20;
     private const string UpdateInstallResultArgument = "--update-install-result";
+
+    // Canonical names from the [Languages] sections of installer/DeskBox.iss
+    // and DeskBox.arm64.iss (both list English first). The app maps its
+    // effective UI culture to one of these; anything else is dropped here so
+    // a stale or malformed --installer-lang value can never reach the
+    // installer command line.
+    internal static readonly FrozenSet<string> KnownInstallerLanguages = new[]
+    {
+        "english",
+        "chinesesimplified",
+        "chinesetraditional",
+        "japanese",
+        "german",
+        "brazilianportuguese",
+        "hindi",
+        "spanish",
+        "french",
+        "arabic",
+        "bengali",
+        "russian",
+        "korean",
+    }.ToFrozenSet(StringComparer.OrdinalIgnoreCase);
     private const string InstallStateRegistryPath = @"Software\DeskBox\DirectInstall";
     private const string UninstallRegistryPath =
         @"Software\Microsoft\Windows\CurrentVersion\Uninstall\{5E052824-3456-427E-9759-3BCAE078A1D3}_is1";
@@ -109,6 +132,11 @@ internal static class Program
         }
 
         DirectInstallScope installScope = ResolveInstallScope(installDirectory);
+        string installerLanguage = ResolveInstallerLanguage(options.InstallerLanguage);
+        if (!string.IsNullOrWhiteSpace(options.InstallerLanguage) && installerLanguage.Length == 0)
+        {
+            Log($"Ignoring unrecognized installer language '{options.InstallerLanguage}'.");
+        }
 
         var startInfo = new ProcessStartInfo
         {
@@ -123,14 +151,16 @@ internal static class Program
         foreach (string argument in BuildInstallerArguments(
                      installDirectory,
                      options.Silent,
-                     installScope))
+                     installScope,
+                     installerLanguage))
         {
             startInfo.ArgumentList.Add(argument);
         }
 
         Log(
             $"Starting installer: {options.InstallerPath}; " +
-            $"target directory: {installDirectory}; scope: {installScope}");
+            $"target directory: {installDirectory}; scope: {installScope}; " +
+            $"language: {(installerLanguage.Length == 0 ? "<installer default>" : installerLanguage)}");
         using var process = Process.Start(startInfo);
         if (process is null)
         {
@@ -157,7 +187,8 @@ internal static class Program
     internal static IReadOnlyList<string> BuildInstallerArguments(
         string installDirectory,
         bool silent,
-        DirectInstallScope installScope)
+        DirectInstallScope installScope,
+        string installerLanguage = "")
     {
         var arguments = new List<string>
         {
@@ -175,10 +206,25 @@ internal static class Program
             arguments.Add("/SP-");
             arguments.Add("/NORESTART");
             arguments.Add("/FORCECLOSEAPPLICATIONS");
+            // /LANG is deliberately silent-only: a matching /LANG suppresses
+            // Inno's Select Language dialog even in interactive runs, which
+            // would take the language choice away from a user running Setup
+            // manually. In a silent run it pins the language to what the app
+            // is currently showing and overrides any stale
+            // "Inno Setup: Language" value left by an old install.
+            if (!string.IsNullOrWhiteSpace(installerLanguage))
+            {
+                arguments.Add($"/LANG={installerLanguage}");
+            }
         }
 
         return arguments;
     }
+
+    internal static string ResolveInstallerLanguage(string? value) =>
+        !string.IsNullOrWhiteSpace(value) && KnownInstallerLanguages.Contains(value)
+            ? value.ToLowerInvariant()
+            : string.Empty;
 
     internal static DirectInstallScope ResolveInstallScope(string installDirectory)
     {
@@ -361,14 +407,81 @@ internal static class Program
 
     private static bool RestartApp(string appPath, string? updateInstallOutcome = null)
     {
+        // An elevated updater (it inherits the app's token, and app-update
+        // flows on fully elevated desktops run elevated) must not hand that
+        // elevation to the restarted app: a post-update DeskBox above the
+        // shell loses drag/drop and triggers the elevation notice on every
+        // update. But the hand-down is only safe when the shell itself
+        // offers a standard-user context — on a fully elevated desktop
+        // matching the shell is what keeps tray and drag working. That
+        // guard, and the failure fallback to the historical inherited
+        // restart, live in ShellUnelevatedLaunch.
+        if (DeskBox.UpdaterPlatform.ShellUnelevatedLaunch.ShouldRestartAtShellIntegrity())
+        {
+            for (int attempt = 1; attempt <= 3; attempt++)
+            {
+                if (DeskBox.UpdaterPlatform.ShellUnelevatedLaunch.TryStartAtShellIntegrity(
+                        appPath,
+                        BuildRestartArguments(updateInstallOutcome),
+                        Log))
+                {
+                    Log($"Restarting app at shell integrity: {appPath} (attempt {attempt})");
+                    return true;
+                }
+
+                if (attempt < 3)
+                {
+                    Thread.Sleep(TimeSpan.FromSeconds(2));
+                }
+            }
+
+            Log("Shell-integrity restart attempts failed; falling back to inherited restart.");
+            // If the fallback lands elevated under a Medium shell, the
+            // app-side launch gate surfaces its one-click fix notice.
+        }
+
+        // A direct start can fail transiently (the installer tail still
+        // holding a handle, an on-access scanner touching the fresh
+        // executable), so retry before falling back to the Start Menu
+        // shortcut, which resolves through a different shell path. If
+        // everything fails the user must launch manually; the ERROR tag
+        // keeps that outcome searchable in the log.
+        for (int attempt = 1; attempt <= 3; attempt++)
+        {
+            if (TryStartApp(appPath, appPath, updateInstallOutcome))
+            {
+                Log($"Restarting app: {appPath} (attempt {attempt})");
+                return true;
+            }
+
+            if (attempt < 3)
+            {
+                Thread.Sleep(TimeSpan.FromSeconds(2));
+            }
+        }
+
+        return TryRestartViaStartMenuShortcut(appPath, updateInstallOutcome);
+    }
+
+    private static string? BuildRestartArguments(string? updateInstallOutcome)
+    {
+        return string.IsNullOrWhiteSpace(updateInstallOutcome)
+            ? null
+            : $"{UpdateInstallResultArgument} {updateInstallOutcome.Trim()}";
+    }
+
+    private static bool TryStartApp(
+        string targetPath,
+        string? workingDirectory,
+        string? updateInstallOutcome)
+    {
         try
         {
-            Log($"Restarting app: {appPath}");
             var startInfo = new ProcessStartInfo
             {
-                FileName = appPath,
+                FileName = targetPath,
                 UseShellExecute = true,
-                WorkingDirectory = Path.GetDirectoryName(appPath) ?? Environment.CurrentDirectory
+                WorkingDirectory = workingDirectory ?? Environment.CurrentDirectory
             };
             if (!string.IsNullOrWhiteSpace(updateInstallOutcome))
             {
@@ -381,9 +494,41 @@ internal static class Program
         }
         catch (Exception ex)
         {
-            Log($"Restart failed: {ex.Message}");
+            Log($"Starting '{targetPath}' failed: {ex.Message}");
             return false;
         }
+    }
+
+    private static bool TryRestartViaStartMenuShortcut(string appPath, string? updateInstallOutcome)
+    {
+        // {autoprograms} resolves per install scope: the user's Programs
+        // folder for current-user installs, the common one for all-users
+        // installs (see the [Icons] section in installer/DeskBox.iss). Try
+        // both locations; the one Setup wrote is the one that exists.
+        string? userPrograms = Environment.GetFolderPath(Environment.SpecialFolder.StartMenu);
+        string? commonPrograms = Environment.GetFolderPath(Environment.SpecialFolder.CommonStartMenu);
+        foreach (string menuRoot in new[] { userPrograms, commonPrograms })
+        {
+            if (string.IsNullOrWhiteSpace(menuRoot))
+            {
+                continue;
+            }
+
+            string shortcutPath = Path.Combine(menuRoot, "Programs", "DeskBox.lnk");
+            if (!File.Exists(shortcutPath))
+            {
+                continue;
+            }
+
+            if (TryStartApp(shortcutPath, workingDirectory: null, updateInstallOutcome))
+            {
+                Log($"Restarted app via Start Menu shortcut: {shortcutPath}");
+                return true;
+            }
+        }
+
+        Log($"[ERROR] Could not restart DeskBox after update; user launch required. Path: {appPath}");
+        return false;
     }
 
     private static void Log(string message)
@@ -406,6 +551,7 @@ internal static class Program
         public string InstallerPath { get; private init; } = string.Empty;
         public string AppPath { get; private init; } = string.Empty;
         public string InstallDirectory { get; private init; } = string.Empty;
+        public string InstallerLanguage { get; private init; } = string.Empty;
         public bool Silent { get; private init; }
         public bool RestartOnly { get; private init; }
 
@@ -415,6 +561,7 @@ internal static class Program
             string installerPath = string.Empty;
             string appPath = string.Empty;
             string installDirectory = string.Empty;
+            string installerLanguage = string.Empty;
             bool silent = false;
             bool restartOnly = false;
 
@@ -456,6 +603,10 @@ internal static class Program
                 {
                     installDirectory = value;
                 }
+                else if (string.Equals(arg, "--installer-lang", StringComparison.OrdinalIgnoreCase))
+                {
+                    installerLanguage = value;
+                }
             }
 
             return new UpdateOptions
@@ -464,6 +615,7 @@ internal static class Program
                 InstallerPath = installerPath,
                 AppPath = appPath,
                 InstallDirectory = installDirectory,
+                InstallerLanguage = installerLanguage,
                 Silent = silent,
                 RestartOnly = restartOnly
             };

@@ -16,7 +16,7 @@ public sealed class GlanceCalendarAndImageServiceTests : IDisposable
         Guid.NewGuid().ToString("N"));
 
     [Theory]
-    [InlineData(360, 247, 1, GlanceImageDecodeSizeCalculator.MinimumDecodePixelWidth)]
+    [InlineData(360, 247, 1, 546)]
     [InlineData(360, 247, 2, 1092)]
     [InlineData(100, 100, 1, GlanceImageDecodeSizeCalculator.MinimumDecodePixelWidth)]
     [InlineData(2000, 1400, 2, GlanceImageDecodeSizeCalculator.MaximumDecodePixelWidth)]
@@ -44,25 +44,33 @@ public sealed class GlanceCalendarAndImageServiceTests : IDisposable
         Assert.Equal(expected, GlanceImageDecodeSizeCalculator.NeedsRefresh(current, required));
     }
 
-    [Fact]
-    public async Task CalendarMonth_AlwaysBuildsSixCompleteWeeks()
+    [Theory]
+    [InlineData(DayOfWeek.Monday)]
+    [InlineData(DayOfWeek.Sunday)]
+    public async Task CalendarMonth_AlwaysBuildsSixCompleteWeeks(DayOfWeek firstDay)
     {
         var source = new LocalCalendarPresentationSource();
+        var culture = (CultureInfo)CultureInfo.GetCultureInfo("zh-CN").Clone();
+        culture.DateTimeFormat.FirstDayOfWeek = firstDay;
 
         GlanceCalendarMonth month = await source.GetMonthAsync(
             new DateOnly(2026, 8, 1),
-            CultureInfo.GetCultureInfo("zh-CN"));
+            culture);
 
         Assert.Equal(new DateOnly(2026, 8, 1), month.Month);
         Assert.Equal(7, month.WeekdayHeaders.Count);
-        Assert.Equal(["一", "二", "三", "四", "五", "六", "日"], month.WeekdayHeaders);
+        string[] expectedHeaders = firstDay == DayOfWeek.Monday
+            ? ["一", "二", "三", "四", "五", "六", "日"]
+            : ["日", "一", "二", "三", "四", "五", "六"];
+        Assert.Equal(expectedHeaders, month.WeekdayHeaders);
         Assert.Equal(42, month.Days.Count);
+        Assert.Equal(firstDay, month.Days[0].Date.DayOfWeek);
         Assert.Contains(month.Days, day => day.Date == new DateOnly(2026, 8, 1) && day.IsCurrentMonth);
         Assert.All(month.Days, day => Assert.False(string.IsNullOrWhiteSpace(day.DayText)));
         Assert.Empty(await source.GetAgendaAsync(
             new DateOnly(2026, 8, 1),
             7,
-            CultureInfo.GetCultureInfo("zh-CN")));
+            culture));
     }
 
     [Fact]
@@ -74,6 +82,8 @@ public sealed class GlanceCalendarAndImageServiceTests : IDisposable
             "src/DeskBox/ViewModels/GlanceWidgetViewModel.cs"));
         string codeBehind = File.ReadAllText(TestPaths.FromRepository(
             "src/DeskBox/Controls/WidgetContents/GlanceWidgetContent.xaml.cs"));
+        string decorationBuilder = File.ReadAllText(TestPaths.FromRepository(
+            "src/DeskBox/Services/GlanceCalendarDayDecorationBuilder.cs"));
         string visualCalculator = File.ReadAllText(TestPaths.FromRepository(
             "src/DeskBox/Services/WidgetMaterialVisualCalculator.cs"));
         string backdrop = File.ReadAllText(TestPaths.FromRepository(
@@ -181,11 +191,21 @@ public sealed class GlanceCalendarAndImageServiceTests : IDisposable
         Assert.Contains("ApplyImageAwareTheme", codeBehind, StringComparison.Ordinal);
         Assert.Contains("x:Key=\"GlanceCalendarDayItemStyle\"", xaml, StringComparison.Ordinal);
         Assert.Contains("CalendarItemCornerRadius=\"6\"", xaml, StringComparison.Ordinal);
-        Assert.Contains("TodayBackground=\"{ThemeResource AccentFillColorDefaultBrush}\"", xaml, StringComparison.Ordinal);
+        // The today accent is host-side: the native TodayBackground runs on a
+        // today date the CalendarView caches once at creation and never
+        // refreshes across midnight (microsoft-ui-xaml #11205), so the surface
+        // must keep the native chrome off and draw the pill from Tag.IsToday.
+        Assert.Contains("IsTodayHighlighted=\"False\"", xaml, StringComparison.Ordinal);
+        Assert.DoesNotContain("TodayBackground=", xaml, StringComparison.Ordinal);
+        // Pin the host-side pill binding itself: without it the flag above
+        // would silently drop today's visual distinction entirely.
+        Assert.Contains("Tag.IsToday", xaml, StringComparison.Ordinal);
         Assert.Contains("Tag.SecondaryText", xaml, StringComparison.Ordinal);
         Assert.Contains("Tag.HasSecondaryText", xaml, StringComparison.Ordinal);
-        Assert.Contains("day?.FestivalText", codeBehind, StringComparison.Ordinal);
-        Assert.Contains("day?.TraditionalText", codeBehind, StringComparison.Ordinal);
+        Assert.Contains("day?.FestivalText", decorationBuilder, StringComparison.Ordinal);
+        Assert.Contains("day?.TraditionalText", decorationBuilder, StringComparison.Ordinal);
+        Assert.Contains("GlanceCalendarDayDecorationBuilder.Build", codeBehind, StringComparison.Ordinal);
+        Assert.Contains("RefreshIfObservedDateChanged", viewModel, StringComparison.Ordinal);
         Assert.Contains("TraditionalCalendarTitle", xaml, StringComparison.Ordinal);
         Assert.Contains("LineHeight=\"10\"", xaml, StringComparison.Ordinal);
         Assert.Contains("Opacity=\"0.86\"", xaml, StringComparison.Ordinal);

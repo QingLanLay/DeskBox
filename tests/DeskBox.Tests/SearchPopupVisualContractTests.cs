@@ -119,10 +119,11 @@ public sealed class SearchPopupVisualContractTests
             "<Setter Property=\"AllowFocusOnInteraction\" Value=\"False\"/>",
             searchPopup,
             StringComparison.Ordinal);
-        Assert.Contains(
-            "<Setter Property=\"UseSystemFocusVisuals\" Value=\"False\"/>",
-            searchPopup,
-            StringComparison.Ordinal);
+        // Sort headers keep the system focus visual on (IsTabStop=True);
+        // AllowFocusOnInteraction stays False on them so mouse sorting never
+        // steals focus from the search box. The favorites/recent row style
+        // that used to carry the second occurrence was dead UI and is gone.
+        Assert.Equal(1, CountOccurrences(searchPopup, "<Setter Property=\"UseSystemFocusVisuals\" Value=\"True\"/>"));
         Assert.Contains(
             "<Setter Property=\"CornerRadius\" Value=\"2\"/>",
             searchPopup,
@@ -139,9 +140,12 @@ public sealed class SearchPopupVisualContractTests
         Assert.Contains("SortSizeDivider", searchPopup, StringComparison.Ordinal);
         Assert.Contains("SortDateDivider", searchPopup, StringComparison.Ordinal);
         Assert.Contains("x:Name=\"FooterAcrylicSurface\"", searchPopup, StringComparison.Ordinal);
-        Assert.Contains("Background=\"{ThemeResource SystemControlAcrylicElementBrush}\"", searchPopup, StringComparison.Ordinal);
-        Assert.Contains("Opacity=\"0.5\"", searchPopup, StringComparison.Ordinal);
+        // Footer material is the Win11 command-layer fill on the Mica base;
+        // large in-app acrylic (SystemControlAcrylicElementBrush @ 0.5) was
+        // retired because it read as a washed-out hole in light theme.
+        Assert.Contains("Background=\"{ThemeResource LayerFillColorDefaultBrush}\"", searchPopup, StringComparison.Ordinal);
         Assert.Contains("IsHitTestVisible=\"False\"", searchPopup, StringComparison.Ordinal);
+        Assert.DoesNotContain("SystemControlAcrylicElementBrush", searchPopup, StringComparison.Ordinal);
         Assert.DoesNotContain("SortHeaderBackground", searchPopup, StringComparison.Ordinal);
         Assert.DoesNotContain("Margin=\"-12,0,0,0\"", searchPopup, StringComparison.Ordinal);
         Assert.DoesNotContain("IsPointerOnRowInteractivePart", searchInteractions, StringComparison.Ordinal);
@@ -218,6 +222,18 @@ public sealed class SearchPopupVisualContractTests
         Assert.Contains("ReferenceEquals(previousSelection, _viewModel.SelectedItem)", popup, StringComparison.Ordinal);
         Assert.Contains("UpdateSelectionHighlight();", popup, StringComparison.Ordinal);
         Assert.Contains("FocusSelectedResult();", popup, StringComparison.Ordinal);
+    }
+
+    private static int CountOccurrences(string content, string needle)
+    {
+        int count = 0;
+        int index = 0;
+        while ((index = content.IndexOf(needle, index, StringComparison.Ordinal)) >= 0)
+        {
+            count++;
+            index += needle.Length;
+        }
+        return count;
     }
 
     private static string FindRepositoryRoot()

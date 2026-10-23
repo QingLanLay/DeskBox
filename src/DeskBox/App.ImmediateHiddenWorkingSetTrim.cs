@@ -12,8 +12,17 @@ public partial class App
     // back-fault cost of a trim the user is about to undo. The grace window
     // also collapses consecutive hide/show cycles into at most one trim.
     // Any visible transition during the window cancels the pending request,
-    // so only a genuinely hidden session trims.
-    private const int ImmediateHiddenWorkingSetTrimGracePeriodMs = 3000;
+    // so only a genuinely hidden session trims. 3 s covered only rapid
+    // toggling: a reveal after a trim costs a 250-296 ms batch animation
+    // (measured 2026-10-21, budget 16.7 ms) because SetProcessWorkingSetSize
+    // keeps no resident floor — 30 s keeps every casual reveal rhythm out of
+    // the trim/refault loop while the drop still fires for real idle.
+    private const int ImmediateHiddenWorkingSetTrimGracePeriodMs = 30000;
+
+    // Mirrors the quiescence episode floor's semantics (skip an already-lean
+    // process): an unconditional trim of a small working set buys no memory
+    // worth its back-fault cost.
+    private const long ImmediateHiddenWorkingSetFloorBytes = 80L * 1024 * 1024;
 
     private readonly HiddenWorkingSetTrimTracker _immediateHiddenWorkingSetTrimTracker = new();
 
@@ -83,6 +92,15 @@ public partial class App
         process.Refresh();
         long workingSetBefore = process.WorkingSet64;
         long privateBytesBefore = process.PrivateMemorySize64;
+        if (workingSetBefore < ImmediateHiddenWorkingSetFloorBytes)
+        {
+            _immediateHiddenWorkingSetTrimTracker.Complete(generation, trimmed: false);
+            Log(
+                "[Memory] Immediate hidden working-set trim skipped reason=below-floor " +
+                $"workingSetMB={workingSetBefore / (1024.0 * 1024):F1} trigger={reason}");
+            return;
+        }
+
         long started = Stopwatch.GetTimestamp();
         bool trimmed = Win32Helper.TrimWorkingSet();
         _immediateHiddenWorkingSetTrimTracker.Complete(generation, trimmed);

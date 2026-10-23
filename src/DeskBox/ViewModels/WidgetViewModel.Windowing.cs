@@ -143,6 +143,15 @@ public partial class WidgetViewModel
                 _pendingPostBatchHydration = false;
                 StartItemHydration();
             }
+            else
+            {
+                // Acquisition half of the release/acquire pairing: icons
+                // released while nothing displayed them come back as their
+                // items re-enter the display set. Stack expansion folds
+                // members into the projection here, which is the model-level
+                // equivalent of a recycled container being realized again.
+                HealReleasedItemIconsIfIdle();
+            }
         }))
         {
             // The queued flag (and a deferred hydration start with it) must
@@ -197,10 +206,7 @@ public partial class WidgetViewModel
 
         _renderWindowBudget = minimumCount;
         ReconcileRenderWindow();
-        if (!UsesStackProjection)
-        {
-            StartItemHydration();
-        }
+        StartItemHydration();
     }
 
     /// <summary>
@@ -235,12 +241,10 @@ public partial class WidgetViewModel
 
         _renderWindowBudget = _renderWindowBudget + Math.Max(1, chunk);
         ReconcileRenderWindow();
-        if (!UsesStackProjection)
-        {
-            // Hydration skips items that already resolved, so this pass only
-            // picks up the newly rendered prefix members.
-            StartItemHydration();
-        }
+        // Hydration skips items that already resolved, so this pass only
+        // picks up the newly rendered prefix members — and, under the stack
+        // projection, any member whose icon was released while folded.
+        StartItemHydration();
     }
 
     /// <summary>
@@ -271,10 +275,7 @@ public partial class WidgetViewModel
                 EffectiveRenderTarget,
                 VisibleItemCount));
         ReconcileRenderWindow();
-        if (!UsesStackProjection)
-        {
-            StartItemHydration();
-        }
+        StartItemHydration();
     }
 
     private int IndexInVisibleItems(WidgetItem item)

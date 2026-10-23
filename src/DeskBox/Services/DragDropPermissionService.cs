@@ -23,7 +23,33 @@ public enum DragDropDiagnosticIssue
     UacDisabled,
     PermissionMismatch,
     AppCompatIssue,
-    StartupShortcutIssue
+    StartupShortcutIssue,
+    ShellAboveApp,
+    ShortcutRunAs
+}
+
+/// <summary>
+/// Integrity relationship between the DeskBox process and the shell. OLE
+/// drag/drop and Shell_NotifyIcon only work reliably when both sides sit at
+/// the same integrity level, so the two actionable states are the asymmetric
+/// ones. This is the single source of truth shared by the launch gate, the
+/// settings diagnostic, and the updater's restart guard.
+/// </summary>
+public enum ShellIntegrityMismatch
+{
+    /// <summary>Process and Explorer share an integrity level; shell
+    /// interaction works. Company machines that force elevation land here —
+    /// they must not be warned at.</summary>
+    None,
+
+    /// <summary>DeskBox is elevated while Explorer is not: UIPI blocks OLE
+    /// drag in both directions. Self-healable — relaunch unelevated.</summary>
+    AppAboveShell,
+
+    /// <summary>Explorer is elevated while DeskBox is not: UIPI blocks tray
+    /// creation and cross-level drag. Not self-healable (the app cannot
+    /// change the shell's token); degrade and explain instead.</summary>
+    ShellAboveApp
 }
 
 public sealed record DragDropPermissionDiagnostic(
@@ -51,6 +77,31 @@ public sealed record DragDropPermissionRepairResult(
     int RepairedCount,
     string FailureMessage,
     bool RequiresStartupSettings);
+
+/// <summary>
+/// Lightweight elevation snapshot for the launch gate: unlike
+/// <see cref="DragDropPermissionService.Diagnose"/>, it touches no shortcuts,
+/// startup registrations, or pending diagnostics — only the current token,
+/// the Explorer token, and the UAC policy.
+/// </summary>
+public sealed record StartupElevationAssessment(
+    bool IsCurrentProcessElevated,
+    bool IsExplorerElevated,
+    bool IsUacDisabled,
+    bool CanRelaunchUnelevated)
+{
+    /// <summary>
+    /// Asymmetric-integrity verdict derived from the two token snapshots.
+    /// Same-level sessions (including fully elevated desktops) read None:
+    /// drag works there, so no warning is warranted.
+    /// </summary>
+    public ShellIntegrityMismatch Mismatch =>
+        IsCurrentProcessElevated == IsExplorerElevated
+            ? ShellIntegrityMismatch.None
+            : IsCurrentProcessElevated
+                ? ShellIntegrityMismatch.AppAboveShell
+                : ShellIntegrityMismatch.ShellAboveApp;
+}
 
 public static class DragDropPermissionService
 {
@@ -98,15 +149,25 @@ public static class DragDropPermissionService
             startupState is StartupRegistrationState.PathMismatch or
                 StartupRegistrationState.BlockedOrFailed;
         bool hasShortcutIssue = shortcutProbes.Any(probe => probe.HasIssue);
+        // Distinct from the generic shortcut issues: this one causes
+        // elevation on every launch and is invisible to the registry-based
+        // AppCompat scan, so it gets its own remediation text.
+        bool hasShortcutRunAsIssue = shortcutProbes.Any(probe => probe.HasRunAsFlag);
         bool permissionMismatch =
             currentToken.IsElevated == true &&
             explorerToken.IsElevated == false;
+        // Reverse asymmetry (Medium app under an elevated desktop): UIPI
+        // blocks tray creation and cross-level drag here too, but the fix
+        // is on the shell side, not a DeskBox relaunch.
+        bool shellAboveApp =
+            currentToken.IsElevated == false &&
+            explorerToken.IsElevated == true;
         bool needsRelaunch =
             currentToken.IsElevated == true &&
             (!isUacDisabled || explorerToken.IsElevated == false);
 
         DragDropDiagnosticSeverity severity =
-            isUacDisabled || permissionMismatch || hasAppCompatIssue || hasStartupIssue || hasShortcutIssue
+            isUacDisabled || permissionMismatch || shellAboveApp || hasAppCompatIssue || hasShortcutRunAsIssue || hasStartupIssue || hasShortcutIssue
                 ? DragDropDiagnosticSeverity.Warning
                 : DragDropDiagnosticSeverity.Ok;
 
@@ -124,6 +185,18 @@ public static class DragDropPermissionService
             issue = DragDropDiagnosticIssue.PermissionMismatch;
             summary = Text(localizationService, "Settings.DragDropPermission.Summary.PermissionMismatch");
             detail = Text(localizationService, "Settings.DragDropPermission.Detail.PermissionMismatch");
+        }
+        else if (shellAboveApp)
+        {
+            issue = DragDropDiagnosticIssue.ShellAboveApp;
+            summary = Text(localizationService, "Settings.DragDropPermission.Summary.ShellAboveApp");
+            detail = Text(localizationService, "Settings.DragDropPermission.Detail.ShellAboveApp");
+        }
+        else if (hasShortcutRunAsIssue)
+        {
+            issue = DragDropDiagnosticIssue.ShortcutRunAs;
+            summary = Text(localizationService, "Settings.DragDropPermission.Summary.ShortcutRunAs");
+            detail = Text(localizationService, "Settings.DragDropPermission.Detail.ShortcutRunAs");
         }
         else if (hasAppCompatIssue)
         {
@@ -168,13 +241,106 @@ public static class DragDropPermissionService
             needsRelaunch);
     }
 
-    public static DragDropPermissionRepairResult Repair(SettingsService settingsService)
+    /// <summary>
+    /// Localized environment-cause lines for shell-environment conditions
+    /// known to break startup surfaces: an elevated desktop running above
+    /// this process, and incompatible compatibility layers. Empty when
+    /// nothing was diagnosed. The fatal-startup dialog and the degraded
+    /// tray notice append this so the fix path reaches the user instead of
+    /// living only in the log.
+    /// </summary>
+    public static string BuildStartupEnvironmentIssueSummary(LocalizationService? localizationService)
+    {
+        var lines = new List<string>();
+
+        if (GetCurrentProcessTokenSnapshot().IsElevated == false &&
+            GetExplorerTokenSnapshot().IsElevated == true)
+        {
+            lines.Add(Text(localizationService, "Settings.DragDropPermission.Summary.ShellAboveApp"));
+        }
+
+        string exePath = GetCurrentExePath();
+        if (GetRelevantAppCompatEntries(exePath).Any(
+                entry => ContainsIncompatibleAppCompatToken(entry.Value)))
+        {
+            lines.Add(Text(localizationService, "Settings.DragDropPermission.Summary.AppCompatIssue"));
+        }
+
+        if (GetKnownShortcutPaths().Any(path =>
+                File.Exists(path) && TryGetShortcutRunAsFlag(path)))
+        {
+            lines.Add(Text(localizationService, "Settings.DragDropPermission.Summary.ShortcutRunAs"));
+        }
+
+        return string.Join(Environment.NewLine, lines);
+    }
+
+    /// <summary>
+    /// Single source of truth for "is this process elevated".
+    /// WindowsPrincipal.IsInRole is false on a UAC filtered token (the
+    /// Administrators group is deny-only there) and true on the elevated
+    /// token — unlike an Owner-vs-User comparison, which merely reports
+    /// whether the *user* sits in the Administrators group (a filtered
+    /// token's default owner stays the Administrators SID) and therefore
+    /// misfires on every admin-account machine.
+    /// </summary>
+    public static bool IsCurrentProcessElevated()
+    {
+        try
+        {
+            using var identity = WindowsIdentity.GetCurrent();
+            return new WindowsPrincipal(identity).IsInRole(WindowsBuiltInRole.Administrator);
+        }
+        catch
+        {
+            return false;
+        }
+    }
+
+    public static StartupElevationAssessment AssessStartupElevation()
+    {
+        ProcessTokenSnapshot currentToken = GetCurrentProcessTokenSnapshot();
+        // The Explorer probe now runs for every launch, not just elevated
+        // ones: the ShellAboveApp direction (Medium app under an elevated
+        // desktop) decides the tray-degraded notice and the lifeline
+        // exemption. A failed probe reads as unelevated, so the worst case
+        // is offering the one-click relaunch whose own fallback re-routes
+        // through ShellExecute when Explorer is genuinely unavailable.
+        ProcessTokenSnapshot explorerToken = GetExplorerTokenSnapshot();
+        UacPolicySnapshot uacPolicy = GetUacPolicySnapshot();
+        bool isUacDisabled = uacPolicy.EnableLua == 0;
+        bool isCurrentElevated = currentToken.IsElevated == true;
+        bool isExplorerElevated = explorerToken.IsElevated == true;
+        return new StartupElevationAssessment(
+            isCurrentElevated,
+            isExplorerElevated,
+            isUacDisabled,
+            ComputeCanRelaunchUnelevated(isUacDisabled, isExplorerElevated));
+    }
+
+    /// <summary>
+    /// Stricter than Diagnose's NeedsRelaunch: the Explorer-parent relaunch
+    /// only produces an unelevated instance when Explorer itself runs
+    /// unelevated (with UAC on). With UAC off — or an elevated Explorer —
+    /// the parent-process handover would spawn another elevated instance,
+    /// so the notice must explain instead of offering a restart.
+    /// </summary>
+    public static bool ComputeCanRelaunchUnelevated(bool isUacDisabled, bool isExplorerElevated)
+    {
+        return !isUacDisabled && !isExplorerElevated;
+    }
+
+    /// <summary>
+    /// Removes the AppCompat RUNASADMIN-style layers that keep relaunching
+    /// DeskBox elevated. Used by Repair and by the launch gate before an
+    /// unelevated relaunch, so the next start is not elevated again.
+    /// Failures go to <paramref name="failures"/> when supplied (Repair's
+    /// report), otherwise to the log only (launch path).
+    /// </summary>
+    public static int ClearElevationCompatibilityFlags(List<string>? failures = null)
     {
         string currentExePath = GetCurrentExePath();
-        var before = Diagnose();
-        int repairedCount = 0;
-        List<string> failures = [];
-        bool requiresStartupSettings = false;
+        int clearedCount = 0;
 
         foreach (var entry in GetRelevantAppCompatEntries(currentExePath))
         {
@@ -185,22 +351,50 @@ public static class DragDropPermissionService
 
             try
             {
-                if (entry.Root.OpenSubKey(AppCompatLayersKey, writable: true) is { } key)
+                // The per-user branch deliberately bypasses the current-user
+                // hive shortcut: inside an MSIX container that view is
+                // copy-on-write virtualized, so the delete would land in the
+                // package-private hive while the real layer survives (and the
+                // repair would count it as cleared). HKLM only accepts writes
+                // when the process is elevated, which the failure list
+                // already covers.
+                RegistryKey? key = entry.RootName == PerUserRootName
+                    ? OpenPerUserAppCompatLayersKey(writable: true)
+                    : Registry.LocalMachine.OpenSubKey(AppCompatLayersKey, writable: true);
+                if (key is not null)
                 {
                     using (key)
                     {
                         key.DeleteValue(entry.ExePath, throwOnMissingValue: false);
                     }
 
-                    repairedCount++;
+                    clearedCount++;
                     App.Log($"[DragDropPermission] Removed AppCompat layer root={entry.RootName} path='{entry.ExePath}' value='{entry.Value}'");
                 }
             }
             catch (Exception ex)
             {
-                failures.Add($"AppCompat {entry.ExePath}: {ex.Message}");
+                if (failures is null)
+                {
+                    App.Log($"[DragDropPermission] AppCompat clear failed for '{entry.ExePath}': {ex.Message}");
+                }
+                else
+                {
+                    failures.Add($"AppCompat {entry.ExePath}: {ex.Message}");
+                }
             }
         }
+
+        return clearedCount;
+    }
+
+    public static DragDropPermissionRepairResult Repair(SettingsService settingsService)
+    {
+        string currentExePath = GetCurrentExePath();
+        var before = Diagnose();
+        List<string> failures = [];
+        bool requiresStartupSettings = false;
+        int repairedCount = ClearElevationCompatibilityFlags(failures);
 
         try
         {
@@ -268,7 +462,18 @@ public static class DragDropPermissionService
             requiresStartupSettings);
     }
 
-    public static bool TryRelaunchAsExplorerUser()
+    /// <summary>
+    /// Relaunches this executable at Explorer's (standard-user) integrity via
+    /// PROC_THREAD_ATTRIBUTE_PARENT_PROCESS (see
+    /// <see cref="DeskBox.Platform.ShellUnelevatedLaunch"/>). When
+    /// <paramref name="additionalArguments"/> is given it is appended to the
+    /// new instance's command line — the launch gate passes
+    /// "--await-parent-exit &lt;pid&gt;" (plus "--startup" for unattended
+    /// launches) so the new instance waits out the elevated holder of the
+    /// single-instance mutex instead of racing it. Falls back to a plain
+    /// ShellExecute relaunch when the shell-parented creation is impossible.
+    /// </summary>
+    public static bool TryRelaunchAsExplorerUser(string additionalArguments = "")
     {
         string exePath = GetCurrentExePath();
         if (!File.Exists(exePath))
@@ -276,88 +481,8 @@ public static class DragDropPermissionService
             return false;
         }
 
-        IntPtr shellWindow = DragDropPermissionNativeMethods.GetShellWindow();
-        if (shellWindow == IntPtr.Zero)
-        {
-            return TryShellExecute(exePath);
-        }
-
-        DragDropPermissionNativeMethods.GetWindowThreadProcessId(shellWindow, out uint explorerProcessId);
-        if (explorerProcessId == 0)
-        {
-            return TryShellExecute(exePath);
-        }
-
-        IntPtr processHandle = DragDropPermissionNativeMethods.OpenProcess(ProcessCreateProcess | ProcessQueryLimitedInformation, false, explorerProcessId);
-        if (processHandle == IntPtr.Zero)
-        {
-            return TryShellExecute(exePath);
-        }
-
-        try
-        {
-            var startupInfo = new DragDropPermissionNativeMethods.StartupInfo();
-            startupInfo.cb = Marshal.SizeOf<DragDropPermissionNativeMethods.StartupInfo>();
-            var processInformation = new DragDropPermissionNativeMethods.ProcessInformation();
-            int attributeListSize = 0;
-            _ = DragDropPermissionNativeMethods.InitializeProcThreadAttributeList(IntPtr.Zero, 1, 0, ref attributeListSize);
-            IntPtr attributeList = Marshal.AllocHGlobal(attributeListSize);
-            try
-            {
-                if (!DragDropPermissionNativeMethods.InitializeProcThreadAttributeList(attributeList, 1, 0, ref attributeListSize))
-                {
-                    return TryShellExecute(exePath);
-                }
-
-                IntPtr parentProcessValue = processHandle;
-                if (!DragDropPermissionNativeMethods.UpdateProcThreadAttribute(
-                        attributeList,
-                        0,
-                        (IntPtr)ProcThreadAttributeParentProcess,
-                        ref parentProcessValue,
-                        (IntPtr)IntPtr.Size,
-                        IntPtr.Zero,
-                        IntPtr.Zero))
-                {
-                    return TryShellExecute(exePath);
-                }
-
-                startupInfo.lpAttributeList = attributeList;
-                string commandLine = $"\"{exePath}\"";
-                bool created = DragDropPermissionNativeMethods.CreateProcess(
-                    null,
-                    commandLine,
-                    IntPtr.Zero,
-                    IntPtr.Zero,
-                    false,
-                    ExtendedStartupInfoPresent,
-                    IntPtr.Zero,
-                    Path.GetDirectoryName(exePath),
-                    ref startupInfo,
-                    out processInformation);
-
-                if (!created)
-                {
-                    return TryShellExecute(exePath);
-                }
-
-                DragDropPermissionNativeMethods.CloseHandle(processInformation.hThread);
-                DragDropPermissionNativeMethods.CloseHandle(processInformation.hProcess);
-                return true;
-            }
-            finally
-            {
-                if (attributeList != IntPtr.Zero)
-                {
-                    DragDropPermissionNativeMethods.DeleteProcThreadAttributeList(attributeList);
-                    Marshal.FreeHGlobal(attributeList);
-                }
-            }
-        }
-        finally
-        {
-            DragDropPermissionNativeMethods.CloseHandle(processHandle);
-        }
+        return ShellUnelevatedLaunch.TryStartAtShellIntegrity(exePath, additionalArguments, App.Log) ||
+            TryShellExecute(exePath);
     }
 
     private static bool TryShellExecute(string exePath)
@@ -428,6 +553,14 @@ public static class DragDropPermissionService
 
     private static List<AppCompatEntry> GetRelevantAppCompatEntries(string currentExePath)
     {
+        // Fixed known-install locations only. Deliberately closed channels:
+        // the HKCU Run value used to be absorbed here, but any same-user
+        // process can rewrite it, which would make an elevated instance
+        // delete arbitrary HKLM AppCompat layers; and the historical
+        // any-directory "DeskBox.exe" filename fallback matched third-party
+        // exes with the same name. Custom install directories keep their
+        // stale layers (Repair reports them as unrelated); clearing those is
+        // the user's call, not a guessable side effect.
         var paths = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
         {
             currentExePath,
@@ -439,23 +572,57 @@ public static class DragDropPermissionService
                 "DeskBox.exe")
         };
 
-        string? startupPath = ExtractExecutablePath(StartupService.GetRunValue() ?? string.Empty);
-        if (!string.IsNullOrWhiteSpace(startupPath))
-        {
-            paths.Add(startupPath);
-        }
-
         var entries = new List<AppCompatEntry>();
-        AddAppCompatEntries(entries, Registry.CurrentUser, "HKCU", paths);
-        AddAppCompatEntries(entries, Registry.LocalMachine, "HKLM", paths);
+        // Both sides of the per-user branch (read and clear) go through
+        // HKU\<SID>: under MSIX, a virtualized delete from an earlier Store
+        // build can even tombstone the value in the container's private
+        // hive, hiding the still-present real layer from HKCU reads here.
+        AddAppCompatEntries(
+            entries,
+            () => OpenPerUserAppCompatLayersKey(writable: false),
+            PerUserRootName,
+            paths);
+        AddAppCompatEntries(
+            entries,
+            () => Registry.LocalMachine.OpenSubKey(AppCompatLayersKey),
+            "HKLM",
+            paths);
         return entries;
     }
 
-    private static void AddAppCompatEntries(List<AppCompatEntry> entries, RegistryKey root, string rootName, HashSet<string> relevantPaths)
+    private const string PerUserRootName = "HKCU";
+
+    /// <summary>
+    /// Opens the current user's AppCompat Layers key through HKU\<SID>
+    /// instead of HKCU. Same rationale as the Run entry store: explicit user
+    /// identity bypasses the MSIX copy-on-write registry virtualization that
+    /// would otherwise swallow Repair's deletes (and mask prior virtualized
+    /// deletes from diagnose reads) in packaged builds.
+    /// </summary>
+    private static RegistryKey? OpenPerUserAppCompatLayersKey(bool writable)
+    {
+        using var identity = WindowsIdentity.GetCurrent();
+        string? sid = identity.User?.Value;
+        if (string.IsNullOrWhiteSpace(sid))
+        {
+            return null;
+        }
+
+        using RegistryKey users = RegistryKey.OpenBaseKey(
+            RegistryHive.Users,
+            RegistryView.Default);
+        return users.OpenSubKey($@"{sid}\{AppCompatLayersKey}", writable);
+    }
+
+    private static void AddAppCompatEntries(
+        List<AppCompatEntry> entries,
+        Func<RegistryKey?> openKey,
+        string rootName,
+        HashSet<string> relevantPaths)
     {
         try
         {
-            using var key = root.OpenSubKey(AppCompatLayersKey);
+            using var key = openKey();
             if (key is null)
             {
                 return;
@@ -470,7 +637,7 @@ public static class DragDropPermissionService
 
                 if (key.GetValue(valueName) is string value && !string.IsNullOrWhiteSpace(value))
                 {
-                    entries.Add(new AppCompatEntry(root, rootName, valueName, value));
+                    entries.Add(new AppCompatEntry(rootName, valueName, value));
                 }
             }
         }
@@ -482,13 +649,10 @@ public static class DragDropPermissionService
 
     private static bool IsRelevantDeskBoxPath(string valueName, HashSet<string> relevantPaths)
     {
-        if (relevantPaths.Contains(valueName))
-        {
-            return true;
-        }
-
-        string fileName = Path.GetFileName(valueName);
-        return string.Equals(fileName, "DeskBox.exe", StringComparison.OrdinalIgnoreCase);
+        // Exact full-path matches against the known install locations only;
+        // see GetRelevantAppCompatEntries for why the historical filename
+        // fallback is gone.
+        return relevantPaths.Contains(valueName);
     }
 
     private static bool ContainsIncompatibleAppCompatToken(string? value)
@@ -534,6 +698,106 @@ public static class DragDropPermissionService
             : Format(localizationService, "Settings.DragDropPermission.Status.Normal", startupValue);
     }
 
+    private const uint SldfRunAsUser = 0x0000_2000;
+
+    // Standalone COM reader for a shortcut's "Run as administrator" flag,
+    // deliberately independent of the TryReadShortcut backend split: the
+    // flag lives in the link header (IShellLinkDataList::GetFlags /
+    // SLDF_RUNAS_USER), not in target/arguments, and a .lnk with this bit
+    // relaunches DeskBox elevated on every open, which the registry-based
+    // AppCompat scan cannot see.
+    //
+    // Raw vtable slots throughout (see ComVtable): the old ComImport form
+    // died twice — the co-class constructor was an InvalidProgramException
+    // under NativeAOT (retail acceptance 2026-10-20), and the interface
+    // declaration was missing CopyDataBlock, so GetFlags sat on
+    // RemoveDataBlock's slot and never returned a flags value even on JIT
+    // (real order per ShObjIdl_core.h: AddDataBlock 3, CopyDataBlock 4,
+    // RemoveDataBlock 5, GetFlags 6, SetFlags 7).
+    //
+    // IPersistFile order per objidl.h: GetClassID 3, IsDirty 4, Load 5,
+    // Save 6, SaveCompleted 7, GetCurFile 8.
+    private static readonly Guid s_clsid_ShellLink =
+        new("00021401-0000-0000-C000-000000000046");
+
+    private static readonly Guid s_iid_IPersistFile =
+        new("0000010b-0000-0000-C000-000000000046");
+
+    private static readonly Guid s_iid_IShellLinkDataList =
+        new("45E2B4AE-B1C3-11D0-B92F-00A0C90312E1");
+
+    [UnmanagedFunctionPointer(CallingConvention.StdCall)]
+    private delegate int PersistFileLoadInvoker(
+        IntPtr self,
+        [MarshalAs(UnmanagedType.LPWStr)] string fileName,
+        uint mode);
+
+    [UnmanagedFunctionPointer(CallingConvention.StdCall)]
+    private delegate int ShellLinkDataListGetFlagsInvoker(
+        IntPtr self, out uint dwFlags);
+
+    internal static bool TryGetShortcutRunAsFlag(string shortcutPath)
+    {
+        IntPtr shellLink = IntPtr.Zero;
+        try
+        {
+            Guid clsid = s_clsid_ShellLink;
+            Guid persistFileIid = s_iid_IPersistFile;
+            if (!ComVtable.TryCreateInProcessInstance(
+                    ref clsid,
+                    ref persistFileIid,
+                    out shellLink))
+            {
+                return false;
+            }
+
+            int loadHr = ComVtable.Slot<PersistFileLoadInvoker>(shellLink, 5)(
+                shellLink,
+                shortcutPath,
+                0);
+            if (loadHr < 0)
+            {
+                return false;
+            }
+
+            Guid dataListIid = s_iid_IShellLinkDataList;
+            int qiHr = ComVtable.QueryInterface(
+                shellLink,
+                ref dataListIid,
+                out IntPtr dataList);
+            if (qiHr < 0 || dataList == IntPtr.Zero)
+            {
+                return false;
+            }
+
+            try
+            {
+                int flagsHr =
+                    ComVtable.Slot<ShellLinkDataListGetFlagsInvoker>(
+                        dataList,
+                        6)(dataList, out uint flags);
+                return flagsHr == 0 && (flags & SldfRunAsUser) != 0;
+            }
+            finally
+            {
+                Marshal.Release(dataList);
+            }
+        }
+        catch (Exception ex)
+        {
+            App.Log(
+                $"[DragDropPermission] Run-as flag probe failed for '{shortcutPath}': {ex.Message}");
+            return false;
+        }
+        finally
+        {
+            if (shellLink != IntPtr.Zero)
+            {
+                Marshal.Release(shellLink);
+            }
+        }
+    }
+
     private static List<ShortcutProbe> GetShortcutProbes(string currentExePath, LocalizationService? localizationService)
     {
         var probes = new List<ShortcutProbe>();
@@ -547,6 +811,7 @@ public static class DragDropPermissionService
 
             bool hasIssue = false;
             string reason = Text(localizationService, "Settings.DragDropPermission.Status.Present");
+            bool hasRunAsFlag = false;
             try
             {
                 if (TryReadShortcut(shortcutPath, out string? targetPath, out string? arguments))
@@ -563,6 +828,16 @@ public static class DragDropPermissionService
                     hasIssue = true;
                     reason = Text(localizationService, "Settings.DragDropPermission.Status.ShortcutTargetUnreadable");
                 }
+
+                hasRunAsFlag = TryGetShortcutRunAsFlag(shortcutPath);
+                if (hasRunAsFlag)
+                {
+                    // The registry-based AppCompat scan cannot see this
+                    // elevation source; surface it at the probe level too so
+                    // the shortcut status line explains itself.
+                    hasIssue = true;
+                    reason = Text(localizationService, "Settings.DragDropPermission.Status.ShortcutRunAs");
+                }
             }
             catch (Exception ex)
             {
@@ -570,7 +845,7 @@ public static class DragDropPermissionService
                 reason = Format(localizationService, "Settings.DragDropPermission.Status.CheckFailed", ex.Message);
             }
 
-            probes.Add(new ShortcutProbe(shortcutPath, hasIssue, reason));
+            probes.Add(new ShortcutProbe(shortcutPath, hasIssue, reason, hasRunAsFlag));
         }
 
         return probes;
@@ -1038,7 +1313,6 @@ public static class DragDropPermissionService
         string? Error);
 
     private sealed record AppCompatEntry(
-        RegistryKey Root,
         string RootName,
         string ExePath,
         string Value);
@@ -1046,7 +1320,8 @@ public static class DragDropPermissionService
     private sealed record ShortcutProbe(
         string Path,
         bool HasIssue,
-        string Reason);
+        string Reason,
+        bool HasRunAsFlag = false);
 
     private sealed record ShortcutDefinition(
         string Path,
@@ -1110,8 +1385,4 @@ public static class DragDropPermissionService
         void SetPath(string pszFile);
     }
 #endif
-
-    private const uint ProcessCreateProcess = 0x0080;
-    private const uint ExtendedStartupInfoPresent = 0x00080000;
-    private const int ProcThreadAttributeParentProcess = 0x00020000;
 }

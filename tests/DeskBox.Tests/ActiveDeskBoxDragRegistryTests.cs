@@ -161,6 +161,35 @@ public sealed class ActiveDeskBoxDragRegistryTests : IDisposable
         }
     }
 
+    [Fact]
+    public void Begin_RetiresEntriesFromPriorLostDrags()
+    {
+        // A modal OLE drag cannot coexist with a new one: starting a drag
+        // must retire registrations whose DropCompleted was lost, or the
+        // same file set dropped back within the entry lifetime would be
+        // silently swallowed as a self-drag.
+        string lostPath = Path.Combine(_root, "dropped-back.txt");
+        string nextPath = Path.Combine(_root, "next-drag.txt");
+        ActiveDeskBoxDragRegistry.Begin(
+            "s-lost",
+            "widget-6",
+            [lostPath],
+            fromStackPopover: false);
+        // A later DeskBox drag of different files begins and completes
+        // normally; the lost registration must not survive it.
+        ActiveDeskBoxDragRegistry.Begin(
+            "s-new",
+            "widget-6",
+            [nextPath],
+            fromStackPopover: false);
+        ActiveDeskBoxDragRegistry.End("s-new");
+
+        Assert.False(ActiveDeskBoxDragRegistry.TryMatch(
+            [lostPath],
+            out _,
+            out _));
+    }
+
     public void Dispose()
     {
         try { Directory.Delete(_root, recursive: true); } catch { }

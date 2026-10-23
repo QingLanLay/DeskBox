@@ -279,6 +279,7 @@ public sealed class SettingsService
     public const string LanguageArabic = "ar-SA";
     public const string LanguageBengali = "bn-BD";
     public const string LanguageRussian = "ru-RU";
+    public const string LanguageKorean = "ko-KR";
     public const double DefaultWidgetWidth = 280;
     public const double DefaultWidgetHeight = 400;
     public const bool DefaultGlobalHotkeyEnabled = true;
@@ -286,8 +287,13 @@ public sealed class SettingsService
         Models.HotkeyActivationKind.Chord;
     public const int DefaultGlobalHotkeyModifiers = (int)Models.HotkeyModifierKeys.None;
     public const int DefaultGlobalHotkeyKey = (int)Windows.System.VirtualKey.F7;
-    public const double MinWidgetWidth = 50;
-    public const double MinWidgetHeight = 50;
+    // The preferred minimum every expanded-widget gate clamps to (the
+    // interactive resize floor, restore/sanitize clamps, and the default
+    // size range). Must stay above WidgetElasticLayout's 20-dip absolute
+    // floor so the elastic projection never fights the gates. Halved from
+    // 50 on 2026-10-20 so expanded widgets can be shrunk further.
+    public const double MinWidgetWidth = 25;
+    public const double MinWidgetHeight = 25;
     public const double DefaultIconSize = 30;
     public const double MinIconSize = 24;
     public const double MaxIconSize = 56;
@@ -379,6 +385,11 @@ public const int DefaultSearchMaxResults = 100;
                 [nameof(AppSettings.WidgetGroups)] = DefaultPreferencePreservationReason.UserData,
                 [nameof(AppSettings.WidgetTopologyLayouts)] = DefaultPreferencePreservationReason.UserData,
                 [nameof(AppSettings.ActiveWidgetTopologyKey)] = DefaultPreferencePreservationReason.RuntimeState,
+                // Device-local monitor identity; the screen it names may not
+                // exist on the machine "reset defaults" runs on.
+                [nameof(AppSettings.WidgetDefaultBoundScreenId)] = DefaultPreferencePreservationReason.UserData,
+                [nameof(AppSettings.WidgetNewPlacementTarget)] = DefaultPreferencePreservationReason.UserChoice,
+                [nameof(AppSettings.WidgetDisplayDisconnectBehavior)] = DefaultPreferencePreservationReason.UserChoice,
                 [nameof(AppSettings.WidgetCapsuleBarOrder)] = DefaultPreferencePreservationReason.UserData,
                 [nameof(AppSettings.WidgetCapsuleFreePlacements)] = DefaultPreferencePreservationReason.UserData,
                 [nameof(AppSettings.DeletedWidgetIds)] = DefaultPreferencePreservationReason.UserData,
@@ -412,6 +423,20 @@ public const int DefaultSearchMaxResults = 100;
 
     private readonly string _settingsPath;
     private AppSettings _settings = new();
+
+    /// <summary>
+    /// True once the in-memory widget list is the merged layout truth (or a
+    /// directly constructed settings graph), so the organizer normalize may
+    /// judge rule targets against it. False while a load sits between its
+    /// pre-merge normalize pass and the widget-layout merge — including the
+    /// unlocked layout-await window — and after a non-authoritative layout
+    /// failure, where the widget list is untrusted and must not drive
+    /// rule-deletion decisions.
+    /// </summary>
+    private bool _widgetLayoutMerged = true;
+    // Set at load when the on-disk settings.json carries a schema version
+    // from a newer build; every save is refused for the session.
+    private bool _settingsSchemaNewerThanBuild;
     private readonly object _lock = new();
 
     // The settings.json / widget-layout.json commit pair is protected by a
@@ -531,6 +556,9 @@ public const int DefaultSearchMaxResults = 100;
             WidgetGroupTitleDisplayModes.IconAndText;
         settings.WidgetGroupWheelSwitchEnabled = true;
         settings.WidgetGroupHoverSwitchEnabled = false;
+        // Reset through the slice so the facade-access ratchet stays untouched.
+        settings.WidgetLayout.WidgetGroupSwitchAnimationStyle =
+            WidgetGroupSwitchAnimationStyles.Auto;
         settings.WidgetGroupsEnabled = true;
         settings.LegacyWidgetCapsuleModeEnabled = null;
         settings.WidgetCompactWidthMode = WidgetCompactWidthModeAligned;
@@ -609,6 +637,7 @@ public const int DefaultSearchMaxResults = 100;
         settings.MusicUseArtworkBackdrop = true;
         settings.MusicEnableCoverHoverMotion = true;
         settings.MusicDisplayMode = MusicDisplayModeAuto;
+        settings.MusicHideTimelineWhenUnavailable = true;
 settings.WeatherAutoLocation = true;
 settings.WeatherCityName = string.Empty;
 settings.WeatherLatitude = 0;
@@ -761,6 +790,20 @@ settings.FocusClickedWidgetOnRaise = false;
             lock (_lock)
             {
                 _settings = loadResult.Value;
+                // A settings.json stamped by a NEWER build must never be
+                // overwritten by this one: the typed model silently drops its
+                // unknown fields, so a save would strip them irreversibly
+                // (and the stripped file would never re-migrate). Same stance
+                // the widget-layout store takes via Layout.CanWrite.
+                _settingsSchemaNewerThanBuild = loadedFromDisk &&
+                    _settings.SchemaVersion > SettingsMigrationPipeline.CurrentSchemaVersion;
+                if (_settingsSchemaNewerThanBuild)
+                {
+                    App.Log(
+                        $"[SettingsService] settings.json schema {_settings.SchemaVersion} is newer " +
+                        $"than this build ({SettingsMigrationPipeline.CurrentSchemaVersion}); " +
+                        "this session's changes cannot persist");
+                }
             }
 
             bool changed;
@@ -821,7 +864,12 @@ settings.FocusClickedWidgetOnRaise = false;
                 changed |= NormalizeFeatureWidgetSettings(_settings);
                 changed |= NormalizeWidgetContentSettings(_settings);
                 changed |= NormalizeWidgetTopologyLayouts(_settings);
-                changed |= NormalizeOrganizerSettings(_settings);
+                // NormalizeOrganizerSettings deliberately does not run here:
+                // rule validity is judged against the widget list, which the
+                // device-layer split moved into widget-layout.json — merged
+                // only later in this load. It once ran here and treated every
+                // enabled rule's target as deleted, disabling the rule and
+                // the master switch on every boot (feedback #553 family).
                 changed |= NormalizeHotkeySettings(_settings);
                 changed |= NormalizeSearchSettings(_settings);
                 changed |= NormalizeQuickCaptureSettings(_settings);
@@ -829,6 +877,14 @@ settings.FocusClickedWidgetOnRaise = false;
                 changed |= NormalizeWeatherSettings(_settings);
                 changed |= NormalizeDeletionSettings(_settings);
                 changed |= DataBackupSettingsPolicy.Normalize(_settings);
+
+                // Suspend organizer normalization for the rest of the load:
+                // until the layout merge lands, the widget list is empty or
+                // legacy, and rule-deletion decisions made against it are
+                // wrong. This also covers a save racing the unlocked layout
+                // await — the write path skips the organizer normalize while
+                // this is false.
+                _widgetLayoutMerged = false;
             }
 
             // Device-layer migration: widget-layout.json either loads its own
@@ -842,6 +898,7 @@ settings.FocusClickedWidgetOnRaise = false;
             lock (_lock)
             {
                 _settings.WidgetLayout.CopyFrom(layoutResult.Data);
+                _widgetLayoutMerged = layoutResult.Authoritative;
                 if (layoutResult.Authoritative)
                 {
                     // File-won data has not seen this session's normalize
@@ -850,6 +907,14 @@ settings.FocusClickedWidgetOnRaise = false;
                     changed |= NormalizeWidgetContentSettings(_settings);
                     changed |= NormalizeFeatureWidgetSettings(_settings);
                     changed |= NormalizeWidgetTopologyLayouts(_settings);
+                    // The organizer normalize READS layout members: rule
+                    // validity is judged against this merged list, and its
+                    // ManagedFolderName backfill must precede the deletion
+                    // normalize's stale-widget pruning (an unfilled path is
+                    // a pruning condition). Skipped on the non-authoritative
+                    // failure branch on purpose: an untrusted widget list
+                    // must not make rule-deletion decisions.
+                    changed |= NormalizeOrganizerSettings(_settings);
                     changed |= NormalizeDeletionSettings(_settings);
                 }
 
@@ -887,7 +952,17 @@ settings.FocusClickedWidgetOnRaise = false;
                 // take the whole desktop down with it.
                 WidgetLayoutLoadResult layoutResult =
                     await Layout.LoadAsync(_settings.WidgetLayout);
-                lock (_lock) _settings.WidgetLayout.CopyFrom(layoutResult.Data);
+                lock (_lock)
+                {
+                    _settings.WidgetLayout.CopyFrom(layoutResult.Data);
+                    // Own the merged-flag state explicitly: a successful
+                    // recovery re-adoption trusts the file data (rules are
+                    // empty in a defaults session either way), a failed one
+                    // keeps organizer normalization suspended for the
+                    // session — an untrusted list must not make
+                    // rule-deletion decisions.
+                    _widgetLayoutMerged = layoutResult.Authoritative;
+                }
             }
             catch (Exception layoutEx) when (layoutEx is not OperationCanceledException)
             {
@@ -971,6 +1046,15 @@ settings.FocusClickedWidgetOnRaise = false;
 
     private async Task<bool> SaveToFileOnlyAsync()
     {
+        if (_settingsSchemaNewerThanBuild)
+        {
+            App.Log(
+                "[SettingsService] Save refused: settings.json schema " +
+                $"{_settings.SchemaVersion} is newer than this build understands; " +
+                "settings changes cannot persist");
+            return false;
+        }
+
         await FileWriteLock.WaitAsync();
         try
         {
@@ -987,8 +1071,16 @@ settings.FocusClickedWidgetOnRaise = false;
             bool layoutSaved = true;
             bool layoutCommitted = false;
             string layoutFailureReason = "widget-layout.json commit failed";
-            if (Layout.IsAuthoritative)
+            if (Layout.IsAuthoritative && _widgetLayoutMerged)
             {
+                // _widgetLayoutMerged, not just IsAuthoritative: the store
+                // flips IsAuthoritative inside its own load, before the
+                // merge lock copies the file data into _settings. A save in
+                // that sub-window would otherwise commit the pre-merge
+                // slice — in the steady state an EMPTY layout — over the
+                // durable widget-layout.json. No writer can reach this
+                // window today (settings-load precedes every saver); the
+                // flag makes that structural instead of incidental.
                 if (Layout.CanWrite)
                 {
                     layoutSaved = await Layout.SaveCheckedAsync(WriteLayoutTempFileAsync);
@@ -1007,7 +1099,7 @@ settings.FocusClickedWidgetOnRaise = false;
             // Fail-closed: when the layout commit failed, the layout slice
             // exists only in memory — the settings file must keep carrying
             // the keys so the data survives to the next successful save.
-            bool stripLayoutKeys = Layout.IsAuthoritative && layoutSaved;
+            bool stripLayoutKeys = Layout.IsAuthoritative && _widgetLayoutMerged && layoutSaved;
             try
             {
                 await ResilientJsonStore.SaveAsync(
@@ -1117,7 +1209,14 @@ settings.FocusClickedWidgetOnRaise = false;
             NormalizeFeatureWidgetSettings(_settings);
             NormalizeWidgetContentSettings(_settings);
             NormalizeWidgetTopologyLayouts(_settings);
-            NormalizeOrganizerSettings(_settings);
+            if (_widgetLayoutMerged)
+            {
+                // The organizer normalize may only run against the merged
+                // widget topology; during the load's layout-await window the
+                // list is empty or legacy and the normalize would disable
+                // every enabled rule as a deleted target.
+                NormalizeOrganizerSettings(_settings);
+            }
             NormalizeHotkeySettings(_settings);
             NormalizeSearchSettings(_settings);
             NormalizeQuickCaptureSettings(_settings);
@@ -1412,6 +1511,63 @@ settings.FocusClickedWidgetOnRaise = false;
         }
     }
 
+    /// <summary>
+    /// Downgrades pins that lost their bound monitor id (hand-edited settings,
+    /// partial migration) back to the legacy unbound chain so resolution can
+    /// never dead-end on an empty reference. Internal for direct policy tests.
+    /// </summary>
+    internal static void NormalizeScreenBindings(AppSettings settings)
+    {
+        foreach (WidgetConfig widget in settings.Widgets)
+        {
+            if (widget.ScreenBindingMode == WidgetScreenBindingMode.Pinned &&
+                string.IsNullOrWhiteSpace(widget.BoundScreenId))
+            {
+                widget.ScreenBindingMode = WidgetScreenBindingMode.Unbound;
+                widget.BoundScreenId = null;
+            }
+        }
+
+        foreach (WidgetGroupConfig group in settings.WidgetGroups)
+        {
+            if (group.ScreenBindingMode == WidgetScreenBindingMode.Pinned &&
+                string.IsNullOrWhiteSpace(group.BoundScreenId))
+            {
+                group.ScreenBindingMode = WidgetScreenBindingMode.Unbound;
+                group.BoundScreenId = null;
+            }
+        }
+
+        settings.WidgetNewPlacementTarget = NormalizeWidgetNewPlacementTarget(
+            settings.WidgetNewPlacementTarget);
+        settings.WidgetDisplayDisconnectBehavior = NormalizeWidgetDisplayDisconnectBehavior(
+            settings.WidgetDisplayDisconnectBehavior);
+    }
+
+    public const string WidgetNewPlacementCursorDisplay = "CursorDisplay";
+    public const string WidgetNewPlacementMainDisplay = "MainDisplay";
+    public const string WidgetNewPlacementSpecificDisplay = "SpecificDisplay";
+
+    public static string NormalizeWidgetNewPlacementTarget(string? value)
+    {
+        return value switch
+        {
+            WidgetNewPlacementMainDisplay => WidgetNewPlacementMainDisplay,
+            WidgetNewPlacementSpecificDisplay => WidgetNewPlacementSpecificDisplay,
+            _ => WidgetNewPlacementCursorDisplay
+        };
+    }
+
+    public const string WidgetDisplayDisconnectMoveToRemaining = "MoveToRemaining";
+    public const string WidgetDisplayDisconnectCollapseToCapsule = "CollapseToCapsule";
+
+    public static string NormalizeWidgetDisplayDisconnectBehavior(string? value)
+    {
+        return string.Equals(value, WidgetDisplayDisconnectCollapseToCapsule)
+            ? WidgetDisplayDisconnectCollapseToCapsule
+            : WidgetDisplayDisconnectMoveToRemaining;
+    }
+
     private static bool NormalizeWidgetTopologyLayouts(AppSettings settings)
     {
         bool changed = false;
@@ -1419,9 +1575,11 @@ settings.FocusClickedWidgetOnRaise = false;
         {
             settings.WidgetTopologyLayouts = [];
             settings.ActiveWidgetTopologyKey = null;
+            NormalizeScreenBindings(settings);
             return true;
         }
 
+        NormalizeScreenBindings(settings);
         foreach (string invalidKey in settings.WidgetTopologyLayouts
                      .Where(pair => string.IsNullOrWhiteSpace(pair.Key) || pair.Value is null)
                      .Select(pair => pair.Key)
@@ -1430,10 +1588,11 @@ settings.FocusClickedWidgetOnRaise = false;
             changed |= settings.WidgetTopologyLayouts.Remove(invalidKey);
         }
 
-        foreach (WidgetTopologyLayoutProfile profile in settings.WidgetTopologyLayouts.Values)
+        foreach ((string key, WidgetTopologyLayoutProfile profile) in settings.WidgetTopologyLayouts)
         {
             if (profile.Version != WidgetTopologyLayoutProfile.CurrentVersion)
             {
+                WidgetTopologyLayoutService.UpgradeProfile(key, profile, settings.WidgetLayout.ActiveWidgetTopologyKey);
                 profile.Version = WidgetTopologyLayoutProfile.CurrentVersion;
                 changed = true;
             }
@@ -2335,7 +2494,7 @@ settings.FocusClickedWidgetOnRaise = false;
         }
 
         if (settings.Language is not (LanguageSystem or LanguageChinese or LanguageChineseTraditional or LanguageEnglish or LanguageJapanese or LanguageGerman or LanguagePortuguese
-            or LanguageHindi or LanguageSpanish or LanguageFrench or LanguageArabic or LanguageBengali or LanguageRussian))
+            or LanguageHindi or LanguageSpanish or LanguageFrench or LanguageArabic or LanguageBengali or LanguageRussian or LanguageKorean))
         {
             settings.Language = LanguageSystem;
             changed = true;
@@ -2691,14 +2850,19 @@ settings.FocusClickedWidgetOnRaise = false;
         settings.RecentOrganizationHistory ??= [];
 
         settings.DesktopOrganizationRules ??= [];
-        var validFileWidgetIds = settings.Widgets
-            .Where(widget =>
-                widget.WidgetKind == WidgetKind.File &&
-                !widget.IsDisabled &&
-                !settings.DeletedWidgetIds.Contains(widget.Id) &&
-                !string.IsNullOrWhiteSpace(widget.MappedFolderPath))
+        // Deletion is decided by the widget tombstone (DeletedWidgetIds, or a
+        // target id that no longer resolves to any widget), never by probing
+        // the disk: a detached drive is indistinguishable from a deleted
+        // folder at load time, and widget hydration recreates mapped folders
+        // anyway. Recoverable target states - the widget is disabled, or the
+        // mapped path has not been backfilled yet - leave the rule enabled
+        // and merely pending, so a later re-enable or backfill resumes
+        // organization instead of losing the rule permanently.
+        var liveWidgetIds = settings.Widgets
+            .Where(widget => !settings.DeletedWidgetIds.Contains(widget.Id))
             .Select(widget => widget.Id)
             .ToHashSet(StringComparer.Ordinal);
+        bool deletedTargetDisabled = false;
         var normalizedDesktopRules = settings.DesktopOrganizationRules
             .Where(rule => rule is not null)
             .Select(rule =>
@@ -2715,9 +2879,10 @@ settings.FocusClickedWidgetOnRaise = false;
                     StringComparer.Ordinal);
                 rule.Extensions = NormalizeDesktopOrganizationExtensions(rule.Extensions);
                 rule.ExcludedExtensions = NormalizeDesktopOrganizationExtensions(rule.ExcludedExtensions);
-                if (!validFileWidgetIds.Contains(rule.TargetWidgetId))
+                if (rule.IsEnabled && !liveWidgetIds.Contains(rule.TargetWidgetId))
                 {
                     rule.IsEnabled = false;
+                    deletedTargetDisabled = true;
                 }
                 return rule;
             })
@@ -2730,18 +2895,32 @@ settings.FocusClickedWidgetOnRaise = false;
             changed = true;
         }
         settings.DesktopOrganizationRules = normalizedDesktopRules;
+        // Effective means an enabled rule targeting a live widget with at
+        // least one matcher. The organizer normalize runs after the
+        // widget-layout merge, so "live" reflects the real widget list; a
+        // target that exists but is not yet usable keeps the switch on (the
+        // runtime resolver skips such rules until the target recovers).
         bool hasEffectiveDesktopOrganizationRule = normalizedDesktopRules.Any(rule =>
             rule.IsEnabled &&
-            validFileWidgetIds.Contains(rule.TargetWidgetId) &&
+            liveWidgetIds.Contains(rule.TargetWidgetId) &&
             (rule.CategoryIds.Count > 0 ||
              rule.SubtypeIds.Count > 0 ||
              rule.Extensions.Count > 0));
         if (settings.DesktopAutoOrganizationEnabled &&
-            !hasEffectiveDesktopOrganizationRule)
+            !hasEffectiveDesktopOrganizationRule &&
+            deletedTargetDisabled)
         {
+            // Only a truly deleted target may close the master switch
+            // automatically; recoverable unavailability keeps the switch on
+            // and is surfaced through a notification instead. The baseline is
+            // preserved on purpose: the watcher reconciles with
+            // BaselineUtc ?? now, and clearing it here would widen the
+            // post-restart organization window.
             settings.DesktopAutoOrganizationEnabled = false;
-            settings.DesktopAutoOrganizationBaselineUtc = null;
             changed = true;
+            App.Log(
+                "[DesktopAutoOrganization] Master switch closed automatically: " +
+                "the last effective rule target widget was deleted.");
         }
         int normalizedAutoOrganizationDelay = DesktopAutoOrganizationPolicy.NormalizeDelaySeconds(
             settings.DesktopOrganization.DesktopAutoOrganizationDelaySeconds);

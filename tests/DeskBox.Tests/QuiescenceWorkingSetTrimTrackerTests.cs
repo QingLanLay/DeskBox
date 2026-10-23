@@ -1,4 +1,4 @@
-using DeskBox.Services;
+﻿using DeskBox.Services;
 
 namespace DeskBox.Tests;
 
@@ -21,6 +21,9 @@ public sealed class QuiescenceWorkingSetTrimTrackerTests
     private static readonly QuiescenceTrimActivitySnapshot VisibleForeground =
         VisibleBackground with { IsDeskBoxForeground = true };
 
+    private static readonly QuiescenceTrimActivitySnapshot VisibleBackgroundAmbient =
+        VisibleBackground with { HasAmbientVisualWork = true };
+
     private static QuiescenceTrimDecision Observe(
         QuiescenceWorkingSetTrimTracker tracker,
         DateTimeOffset now,
@@ -38,12 +41,151 @@ public sealed class QuiescenceWorkingSetTrimTrackerTests
         Assert.Equal("waiting-for-quiet", early.Reason);
         Assert.Equal(QuiescenceTrimTier.VisibleBackground, early.Tier);
 
+        // The first idle after launch is an idle transition: the episode
+        // rule fires, not the backstop cadence.
         var due = Observe(
             tracker,
             T0 + QuiescenceWorkingSetTrimTracker.VisibleBackgroundQuietDuration,
             VisibleBackground);
         Assert.True(due.ShouldTrim);
-        Assert.Equal("quiet", due.Reason);
+        Assert.Equal("episode-idle", due.Reason);
+        Assert.True(due.EpisodeTrim);
+    }
+
+    [Fact]
+    public void EpisodeTrim_FiresSecondsAfterInteractionEnds_EvenInsideBackstopCooldown()
+    {
+        // THE behavior pin (2026-10-19): "stop touching widgets and the
+        // memory drops ~5 s later." A trim happened under a minute ago (the
+        // backstop cooldown would normally hold it), the user interacted and
+        // stopped again — the new idle episode earns its free trim anyway.
+        var tracker = new QuiescenceWorkingSetTrimTracker();
+        tracker.CommitTrim(T0);
+        tracker.NoteActivity();
+        Observe(tracker, T0 + TimeSpan.FromSeconds(1), VisibleBackground);
+
+        var due = Observe(
+            tracker,
+            T0 + TimeSpan.FromSeconds(40),
+            VisibleBackground,
+            workingSet: 200 * MB);
+        Assert.True(due.ShouldTrim);
+        Assert.Equal("episode-idle", due.Reason);
+    }
+
+    [Fact]
+    public void EpisodeTrim_PaysGlobalTwentySecondCooldown()
+    {
+        // Burst interactions with ~10 s gaps must not wave-storm: the free
+        // trim still respects the global minimum interval.
+        var tracker = new QuiescenceWorkingSetTrimTracker();
+        tracker.CommitTrim(T0);
+        tracker.NoteActivity();
+        Observe(tracker, T0 + TimeSpan.FromSeconds(1), VisibleBackground);
+
+        var held = Observe(
+            tracker,
+            T0 + TimeSpan.FromSeconds(19),
+            VisibleBackground,
+            workingSet: 200 * MB);
+        Assert.False(held.ShouldTrim);
+        Assert.Equal("trim-cooldown", held.Reason);
+
+        var due = Observe(
+            tracker,
+            T0 + TimeSpan.FromSeconds(24),
+            VisibleBackground,
+            workingSet: 200 * MB);
+        Assert.True(due.ShouldTrim);
+    }
+
+    [Fact]
+    public void EpisodeTrim_HeldBelowEpisodeFloor_WithoutConsumingThePass()
+    {
+        var tracker = new QuiescenceWorkingSetTrimTracker();
+        Observe(tracker, T0, VisibleBackground, workingSet: 60 * MB);
+
+        var lean = Observe(
+            tracker,
+            T0 + QuiescenceWorkingSetTrimTracker.VisibleBackgroundQuietDuration,
+            VisibleBackground,
+            workingSet: 60 * MB);
+        Assert.False(lean.ShouldTrim);
+        Assert.Equal("below-episode-floor", lean.Reason);
+
+        // The pass stays armed: growth inside the same episode still gets it.
+        var grown = Observe(
+            tracker,
+            T0 + QuiescenceWorkingSetTrimTracker.VisibleBackgroundQuietDuration +
+                TimeSpan.FromSeconds(1),
+            VisibleBackground,
+            workingSet: 120 * MB);
+        Assert.True(grown.ShouldTrim);
+        Assert.Equal("episode-idle", grown.Reason);
+    }
+
+    [Fact]
+    public void EpisodeTrim_ConsumedOncePerIdleEpisode()
+    {
+        var tracker = new QuiescenceWorkingSetTrimTracker();
+        Observe(tracker, T0, VisibleBackground, workingSet: 200 * MB);
+        var due = Observe(
+            tracker,
+            T0 + QuiescenceWorkingSetTrimTracker.VisibleBackgroundQuietDuration,
+            VisibleBackground,
+            workingSet: 200 * MB);
+        Assert.True(due.EpisodeTrim);
+        tracker.CommitTrim(
+            T0 + QuiescenceWorkingSetTrimTracker.VisibleBackgroundQuietDuration);
+
+        // Same idle episode, rebound far past the episode floor: held by the
+        // backstop cooldown — the churn loop stays dead.
+        Observe(
+            tracker,
+            T0 + TimeSpan.FromSeconds(61),
+            VisibleBackground,
+            workingSet: 180 * MB);
+        var churnWindow = Observe(
+            tracker,
+            T0 + TimeSpan.FromSeconds(67),
+            VisibleBackground,
+            workingSet: 180 * MB);
+        Assert.False(churnWindow.ShouldTrim);
+        Assert.Equal("trim-cooldown", churnWindow.Reason);
+    }
+
+    [Fact]
+    public void EpisodeTrim_RearmedByActivity()
+    {
+        var tracker = new QuiescenceWorkingSetTrimTracker();
+        Observe(tracker, T0, VisibleBackground, workingSet: 200 * MB);
+        tracker.CommitTrim(
+            T0 + QuiescenceWorkingSetTrimTracker.VisibleBackgroundQuietDuration);
+
+        // Activity (any blocker or NoteActivity) re-arms the pass and ends
+        // the old quiet accounting...
+        Observe(
+            tracker,
+            T0 + TimeSpan.FromSeconds(30),
+            VisibleBackground with { IsWidgetInteractionActive = true },
+            workingSet: 200 * MB);
+
+        // ...the next observation starts the new quiet window...
+        Observe(
+            tracker,
+            T0 + TimeSpan.FromSeconds(31),
+            VisibleBackground,
+            workingSet: 200 * MB);
+
+        // ...and the idle transition trims again inside the backstop
+        // cooldown.
+        var due = Observe(
+            tracker,
+            T0 + TimeSpan.FromSeconds(37),
+            VisibleBackground,
+            workingSet: 200 * MB);
+        Assert.True(due.ShouldTrim);
+        Assert.Equal("episode-idle", due.Reason);
     }
 
     [Theory]
@@ -131,33 +273,34 @@ public sealed class QuiescenceWorkingSetTrimTrackerTests
     {
         var tracker = new QuiescenceWorkingSetTrimTracker();
         tracker.CommitTrim(T0);
-        Observe(tracker, T0 + TimeSpan.FromSeconds(1), VisibleBackground, workingSet: 2 * MB);
+        Observe(tracker, T0 + TimeSpan.FromSeconds(1), VisibleBackgroundAmbient, workingSet: 2 * MB);
 
-        // Quiet is satisfied at T0+6s, but the 20 s cooldown is not.
-        var cooldown = Observe(
+        // Ambient work pays the 15 s quiet tier first: at T0+6s the trim
+        // is still waiting for quiet (the gate order is quiet → cooldown).
+        var early = Observe(
             tracker,
             T0 + TimeSpan.FromSeconds(6),
-            VisibleBackground,
+            VisibleBackgroundAmbient,
             workingSet: 400 * MB);
-        Assert.False(cooldown.ShouldTrim);
-        Assert.Equal("trim-cooldown", cooldown.Reason);
+        Assert.False(early.ShouldTrim);
+        Assert.Equal("waiting-for-quiet", early.Reason);
 
-        // The baseline is sampled once the working set has settled (8 s):
-        // pages that fault straight back after a trim are steady state, not
-        // growth, so 300 MB here becomes the reference point. The readings
-        // stay above the 240 MB visible floor so the growth gate is what
-        // speaks in this test.
+        // The baseline is sampled once the rebound has saturated (the 90 s
+        // plateau): pages that fault back after a trim are steady state,
+        // not growth, so 300 MB here becomes the reference point. The
+        // readings stay above the 240 MB visible floor so the growth gate
+        // is what speaks in this test.
         Observe(
             tracker,
             T0 + QuiescenceWorkingSetTrimTracker.BaselineSettleDelay,
-            VisibleBackground,
+            VisibleBackgroundAmbient,
             workingSet: 300 * MB);
 
-        // Cooldown over, but the working set barely regrew: not worth it.
+        // Ambient backgrounds have no episode pass — the growth gate holds.
         var flat = Observe(
             tracker,
-            T0 + QuiescenceWorkingSetTrimTracker.MinimumTrimInterval,
-            VisibleBackground,
+            T0 + TimeSpan.FromSeconds(120),
+            VisibleBackgroundAmbient,
             workingSet: 300 * MB + 8 * MB);
         Assert.False(flat.ShouldTrim);
         Assert.Equal("insufficient-growth", flat.Reason);
@@ -166,8 +309,8 @@ public sealed class QuiescenceWorkingSetTrimTrackerTests
         // never dips below the 32 MB floor nor above the 128 MB cap.
         var grown = Observe(
             tracker,
-            T0 + QuiescenceWorkingSetTrimTracker.MinimumTrimInterval,
-            VisibleBackground,
+            T0 + TimeSpan.FromSeconds(120),
+            VisibleBackgroundAmbient,
             workingSet: 300 * MB + 75 * MB);
         Assert.True(grown.ShouldTrim);
     }
@@ -178,14 +321,15 @@ public sealed class QuiescenceWorkingSetTrimTrackerTests
         var tracker = new QuiescenceWorkingSetTrimTracker();
         tracker.CommitTrim(T0);
         // Observations stop before the settle delay, so no baseline exists yet.
-        Observe(tracker, T0 + TimeSpan.FromSeconds(1), VisibleBackground, workingSet: 2 * MB);
+        Observe(tracker, T0 + TimeSpan.FromSeconds(1), VisibleBackgroundAmbient, workingSet: 2 * MB);
 
         var held = Observe(
             tracker,
-            T0 + TimeSpan.FromSeconds(7),
-            VisibleBackground,
+            T0 + TimeSpan.FromSeconds(30),
+            VisibleBackgroundAmbient,
             workingSet: 400 * MB);
         Assert.False(held.ShouldTrim);
+        Assert.Equal("baseline-settling", held.Reason);
     }
 
     [Fact]
@@ -196,13 +340,17 @@ public sealed class QuiescenceWorkingSetTrimTrackerTests
         // growth gate could speak.
         var tracker = new QuiescenceWorkingSetTrimTracker();
         tracker.CommitTrim(T0);
-        Observe(tracker, T0 + QuiescenceWorkingSetTrimTracker.BaselineSettleDelay, Hidden, workingSet: 80 * MB);
+        Observe(
+            tracker,
+            T0 + QuiescenceWorkingSetTrimTracker.BaselineSettleDelay,
+            Hidden,
+            workingSet: 80 * MB);
 
         // 25% of 80 MB = 20 MB, but the floor pins the gate at 32 MB so a
         // low-water baseline cannot cause a perpetual trim loop.
         var under = Observe(
             tracker,
-            T0 + QuiescenceWorkingSetTrimTracker.MinimumTrimInterval,
+            T0 + TimeSpan.FromSeconds(120),
             Hidden,
             workingSet: 100 * MB);
         Assert.False(under.ShouldTrim);
@@ -210,7 +358,7 @@ public sealed class QuiescenceWorkingSetTrimTrackerTests
 
         var grown = Observe(
             tracker,
-            T0 + QuiescenceWorkingSetTrimTracker.MinimumTrimInterval,
+            T0 + TimeSpan.FromSeconds(120),
             Hidden,
             workingSet: 80 * MB + QuiescenceWorkingSetTrimTracker.MinimumWorkingSetGrowthBytes);
         Assert.True(grown.ShouldTrim);
@@ -219,28 +367,41 @@ public sealed class QuiescenceWorkingSetTrimTrackerTests
     [Fact]
     public void FirstTrim_VisibleTierRequiresAbsoluteWorkingSetFloor()
     {
+        // 2026-10-17 scope change: the floor binds the foreground tier and
+        // ambient-animated backgrounds (pages touched every frame). A static
+        // background-visible desktop — file grids, the system monitor's
+        // 1 Hz rows — has no floor: trimming is effective there, and the
+        // always-visible monitor widget otherwise dead-locked the idle trim.
         var tracker = new QuiescenceWorkingSetTrimTracker();
         Observe(tracker, T0, VisibleBackground, workingSet: 150 * MB);
 
-        // The visible floor matches the old visible-idle working-set
-        // threshold (240 MB): a small visible session is never paged out
-        // from under the user even though no growth baseline exists yet.
-        var lowVisible = Observe(
+        var staticBackgroundDue = Observe(
             tracker,
             T0 + QuiescenceWorkingSetTrimTracker.VisibleBackgroundQuietDuration,
             VisibleBackground,
             workingSet: 150 * MB);
-        Assert.False(lowVisible.ShouldTrim);
-        Assert.Equal("below-visible-floor", lowVisible.Reason);
+        Assert.True(staticBackgroundDue.ShouldTrim);
+        Assert.Equal("episode-idle", staticBackgroundDue.Reason);
 
-        // Waiting longer does not help — only size clears this gate.
-        var muchLater = Observe(
-            tracker,
-            T0 + TimeSpan.FromSeconds(60),
-            VisibleBackground,
+        var ambientTracker = new QuiescenceWorkingSetTrimTracker();
+        Observe(ambientTracker, T0, VisibleBackgroundAmbient, workingSet: 150 * MB);
+        var ambientBackground = Observe(
+            ambientTracker,
+            T0 + QuiescenceWorkingSetTrimTracker.VisibleForegroundQuietDuration,
+            VisibleBackgroundAmbient,
             workingSet: 150 * MB);
-        Assert.False(muchLater.ShouldTrim);
-        Assert.Equal("below-visible-floor", muchLater.Reason);
+        Assert.False(ambientBackground.ShouldTrim);
+        Assert.Equal("below-visible-floor", ambientBackground.Reason);
+
+        var foregroundTracker = new QuiescenceWorkingSetTrimTracker();
+        Observe(foregroundTracker, T0, VisibleForeground, workingSet: 150 * MB);
+        var foreground = Observe(
+            foregroundTracker,
+            T0 + QuiescenceWorkingSetTrimTracker.VisibleForegroundQuietDuration,
+            VisibleForeground,
+            workingSet: 150 * MB);
+        Assert.False(foreground.ShouldTrim);
+        Assert.Equal("below-visible-floor", foreground.Reason);
 
         // The hidden tier has no absolute floor: hidden pages are cheap to
         // re-fault and the immediate-hidden trim already trims on hide.
@@ -257,15 +418,14 @@ public sealed class QuiescenceWorkingSetTrimTrackerTests
     [Theory]
     [InlineData(false)]
     [InlineData(true)]
-    public void VisibleTiers_BelowAbsoluteFloor_NeverTrim(bool isForeground)
+    public void HotVisibleTiers_BelowAbsoluteFloor_NeverTrim(bool isForeground)
     {
-        var snapshot = isForeground ? VisibleForeground : VisibleBackground;
+        var snapshot = isForeground ? VisibleForeground : VisibleBackgroundAmbient;
         var tracker = new QuiescenceWorkingSetTrimTracker();
         Observe(tracker, T0, snapshot, workingSet: 150 * MB);
 
-        // Far past every tier's quiet deadline: still no trim, because the
-        // process is simply not big enough to be worth paging out while the
-        // user is watching.
+        // Far past every tier's quiet deadline: still no trim — the process
+        // is not big enough to be worth paging out while its pages stay hot.
         var pastDeadline = Observe(
             tracker,
             T0 + QuiescenceWorkingSetTrimTracker.VisibleForegroundQuietDuration +
@@ -281,10 +441,12 @@ public sealed class QuiescenceWorkingSetTrimTrackerTests
     [InlineData(true)]
     public void VisibleTier_TrimsAtAbsoluteFloorOnceQuiet(bool isForeground)
     {
-        var snapshot = isForeground ? VisibleForeground : VisibleBackground;
-        TimeSpan requiredQuiet = isForeground
-            ? QuiescenceWorkingSetTrimTracker.VisibleForegroundQuietDuration
-            : QuiescenceWorkingSetTrimTracker.VisibleBackgroundQuietDuration;
+        // Both snapshots here are floor-bound (foreground, or ambient-animated
+        // background), and ambient work lengthens the required quiet period
+        // to the foreground duration — so both pay the 15 s tier.
+        var snapshot = isForeground ? VisibleForeground : VisibleBackgroundAmbient;
+        TimeSpan requiredQuiet =
+            QuiescenceWorkingSetTrimTracker.VisibleForegroundQuietDuration;
         var tracker = new QuiescenceWorkingSetTrimTracker();
 
         // The floor is inclusive: exactly 240 MB is trimmable (first trim
@@ -307,25 +469,85 @@ public sealed class QuiescenceWorkingSetTrimTrackerTests
         Observe(
             tracker,
             T0 + QuiescenceWorkingSetTrimTracker.BaselineSettleDelay,
-            VisibleBackground,
+            VisibleBackgroundAmbient,
             workingSet: 80 * MB);
 
-        // Growth clears the 32 MB minimum over the small baseline, but a
-        // visible re-trim must also clear the absolute floor.
+        // Ambient work pays the 15 s quiet tier on top of the cooldown and
+        // the settle window before either gate is even reached.
+        DateTimeOffset whenChecked = T0 + QuiescenceWorkingSetTrimTracker
+            .BaselineSettleDelay +
+            QuiescenceWorkingSetTrimTracker.VisibleForegroundQuietDuration +
+            TimeSpan.FromSeconds(5);
+
+        // Growth clears the 32 MB minimum over the small baseline, but an
+        // ambient-animated visible re-trim must also clear the absolute floor.
         var grownButSmall = Observe(
             tracker,
-            T0 + QuiescenceWorkingSetTrimTracker.MinimumTrimInterval,
-            VisibleBackground,
+            whenChecked,
+            VisibleBackgroundAmbient,
             workingSet: 80 * MB + QuiescenceWorkingSetTrimTracker.MinimumWorkingSetGrowthBytes);
         Assert.False(grownButSmall.ShouldTrim);
         Assert.Equal("below-visible-floor", grownButSmall.Reason);
 
         var grown = Observe(
             tracker,
-            T0 + QuiescenceWorkingSetTrimTracker.MinimumTrimInterval,
-            VisibleBackground,
+            whenChecked,
+            VisibleBackgroundAmbient,
             workingSet: QuiescenceWorkingSetTrimTracker.VisibleTierMinimumWorkingSetBytes);
         Assert.True(grown.ShouldTrim);
+    }
+
+    [Fact]
+    public void StaticBackgroundVisible_BackstopNeedsGrowthOverPlateauBaseline()
+    {
+        // The system-monitor regression pin, retold for the episode model
+        // (2026-10-19): the free pass trims the idle transition, and within
+        // the SAME idle episode the backstop only fires on genuine growth
+        // past the 5-minute cadence — the post-trim rebound (absorbed into
+        // the 90 s plateau baseline) must not restart the churn loop.
+        var tracker = new QuiescenceWorkingSetTrimTracker();
+        Observe(tracker, T0, VisibleBackground, workingSet: 200 * MB);
+
+        // The idle transition spends its episode pass...
+        DateTimeOffset passAt = T0 +
+            QuiescenceWorkingSetTrimTracker.VisibleBackgroundQuietDuration;
+        var pass = Observe(
+            tracker,
+            passAt,
+            VisibleBackground,
+            workingSet: 200 * MB);
+        Assert.True(pass.ShouldTrim);
+        Assert.True(pass.EpisodeTrim);
+        tracker.CommitTrim(passAt);
+
+        // ...the rebound saturates, and the plateau becomes the baseline.
+        Observe(
+            tracker,
+            passAt + QuiescenceWorkingSetTrimTracker.BaselineSettleDelay +
+                TimeSpan.FromSeconds(1),
+            VisibleBackground,
+            workingSet: 70 * MB);
+
+        DateTimeOffset backstopDue = passAt +
+            QuiescenceWorkingSetTrimTracker.StaticBackgroundMinimumTrimInterval;
+
+        // Same episode, regrowth below the growth gate: held.
+        var notGrown = Observe(
+            tracker,
+            backstopDue,
+            VisibleBackground,
+            workingSet: 75 * MB);
+        Assert.False(notGrown.ShouldTrim);
+        Assert.Equal("insufficient-growth", notGrown.Reason);
+
+        // Genuine growth (≥32 MB over the plateau) trims at the cadence.
+        var grown = Observe(
+            tracker,
+            backstopDue,
+            VisibleBackground,
+            workingSet: 70 * MB + QuiescenceWorkingSetTrimTracker.MinimumWorkingSetGrowthBytes);
+        Assert.True(grown.ShouldTrim);
+        Assert.False(grown.EpisodeTrim);
     }
 
     [Fact]

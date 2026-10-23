@@ -1,4 +1,4 @@
-using System.Text.RegularExpressions;
+﻿using System.Text.RegularExpressions;
 
 namespace DeskBox.Tests;
 
@@ -27,12 +27,12 @@ public sealed class AotStage4D1BContractTests
         Assert.Contains("using CommunityToolkit.WinUI.Controls;", source, StringComparison.Ordinal);
         Assert.Matches(
             new Regex(
-                @"case SettingsCard (?<name>\w+):\s*\k<name>\.Header = value;",
+                @"case SettingsCard (?<name>\w+):\s*\k<name>\.Header = InfoTip\.TryCreateHeaderContent\(\k<name>, value\) \?\? value;",
                 RegexOptions.CultureInvariant),
             source);
         Assert.Matches(
             new Regex(
-                @"case SettingsExpander (?<name>\w+):\s*\k<name>\.Header = value;",
+                @"case SettingsExpander (?<name>\w+):\s*\k<name>\.Header = InfoTip\.TryCreateHeaderContent\(\k<name>, value\) \?\? value;",
                 RegexOptions.CultureInvariant),
             source);
         Assert.Matches(
@@ -56,15 +56,18 @@ public sealed class AotStage4D1BContractTests
         // Combos such as Grid|HeaderKey or StackPanel|HeaderKey are intentional
         // search-catalog markers (indexed by update-settings-search-catalog.ps1);
         // Localized.cs deliberately ignores them at runtime because those
-        // containers have no Header/Description property.
+        // containers have no Header/Description property. InfoBar carries the
+        // native notice Title/Message properties for the notice cards.
         IReadOnlyDictionary<string, int> usages = ReadLocalizedXamlUsages();
-        Assert.Equal(5, usages.Count);
-        Assert.Equal(203, usages["toolkit:SettingsCard|HeaderKey"]);
-        Assert.Equal(169, usages["toolkit:SettingsCard|DescriptionKey"]);
-        Assert.Equal(22, usages["toolkit:SettingsExpander|HeaderKey"]);
-        Assert.Equal(9, usages["toolkit:SettingsExpander|DescriptionKey"]);
+        Assert.Equal(7, usages.Count);
+        Assert.Equal(216, usages["toolkit:SettingsCard|HeaderKey"]);
+        Assert.Equal(184, usages["toolkit:SettingsCard|DescriptionKey"]);
+        Assert.Equal(36, usages["toolkit:SettingsExpander|HeaderKey"]);
+        Assert.Equal(22, usages["toolkit:SettingsExpander|DescriptionKey"]);
         Assert.Equal(2, usages["TextBox|HeaderKey"]);
-        Assert.Equal(405, usages.Values.Sum());
+        Assert.Equal(6, usages["InfoBar|HeaderKey"]);
+        Assert.Equal(6, usages["InfoBar|DescriptionKey"]);
+        Assert.Equal(472, usages.Values.Sum());
     }
 
     [Fact]

@@ -23,7 +23,8 @@ public sealed class AotStage4E2ContractTests
         Assert.Equal(1, CountOccurrences(xaml, "{x:Bind TitleFontSize, Mode=OneWay}"));
         Assert.Equal(1, CountOccurrences(xaml, "{x:Bind Title, Mode=OneWay}"));
         Assert.Equal(1, CountOccurrences(xaml, "{x:Bind EditorFontSize, Mode=OneWay}"));
-        Assert.Equal(1, CountOccurrences(xaml, "{x:Bind CancelText, Mode=OneWay}"));
+        // 2 = cancel button Content + its AutomationProperties.Name (a11y same-source).
+        Assert.Equal(2, CountOccurrences(xaml, "{x:Bind CancelText, Mode=OneWay}"));
         Assert.Equal(2, CountOccurrences(xaml, "{x:Bind CommandFontSize, Mode=OneWay}"));
         Assert.Equal(1, CountOccurrences(xaml, "{x:Bind SaveText, Mode=OneWay}"));
         Assert.DoesNotContain("ElementName=InlineEditorRoot", xaml, StringComparison.Ordinal);
@@ -103,7 +104,7 @@ public sealed class AotStage4E2ContractTests
     {
         string audit = ReadRepositoryFile("scripts/publish-aot-audit.ps1");
 
-        Assert.Contains("$stage4E2MaximumWmc1510Count = 875", audit, StringComparison.Ordinal);
+        Assert.Contains("$stage4E2MaximumWmc1510Count = 790", audit, StringComparison.Ordinal);
         Assert.Contains("Stage 4E-2 WMC1510 count regressed above its ceiling", audit, StringComparison.Ordinal);
     }
 

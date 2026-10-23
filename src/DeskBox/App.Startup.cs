@@ -120,6 +120,10 @@ public partial class App
         Log($"[Startup] Fatal: {reason}" +
             (exception is null ? string.Empty : $": {exception}"));
 
+        // A fatal-startup exit is intentional: closing the breadcrumb keeps
+        // the next launch from mistaking this exit for a storm casualty.
+        Current?._startupSessionLedger?.MarkCleanExit();
+
         if (s_startupLaunchQuietExit)
         {
             // Task-triggered launch: nobody is watching, and the logon task's
@@ -145,11 +149,7 @@ public partial class App
 
         try
         {
-            Win32Helper.ShowFatalError(
-                "DeskBox could not finish starting and is about to close.\n\n" +
-                $"Details were written to the log:\n{LogPath}\n\n" +
-                "You can start DeskBox again in a moment.",
-                "DeskBox");
+            Win32Helper.ShowFatalError(BuildFatalStartupMessage(), "DeskBox");
         }
         catch (Exception dialogFailure)
         {
@@ -161,20 +161,60 @@ public partial class App
     }
 
     /// <summary>
+    /// Localized fatal-startup message, with the diagnosed environment
+    /// causes appended when the shell relationship or compatibility layers
+    /// explain the broken startup. Falls back to the historical English text
+    /// when no localization is reachable yet, so the fatal path can never
+    /// fail to produce a dialog.
+    /// </summary>
+    private static string BuildFatalStartupMessage()
+    {
+        LocalizationService? localization = Current?.LocalizationService;
+        if (localization is null)
+        {
+            return "DeskBox could not finish starting and is about to close.\n\n" +
+                $"Details were written to the log:\n{LogPath}\n\n" +
+                "You can start DeskBox again in a moment.";
+        }
+
+        string message = localization.Format("Startup.Fatal.Body", LogPath);
+        try
+        {
+            string environmentIssues =
+                DragDropPermissionService.BuildStartupEnvironmentIssueSummary(localization);
+            if (environmentIssues.Length > 0)
+            {
+                message += "\n\n" +
+                    localization.T("Startup.Fatal.EnvironmentIssuesHeader") + "\n" +
+                    environmentIssues;
+            }
+        }
+        catch (Exception summaryFailure)
+        {
+            // The fatal dialog must survive its own diagnostics.
+            Log($"[Startup] Environment issue summary failed: {summaryFailure.Message}");
+        }
+
+        return message;
+    }
+
+    /// <summary>
     /// The process must end startup owning at least one surface the user can
-    /// act on: the tray icon, or a widget window (widget windows legitimately
-    /// exist while hidden, so visibility is not the criterion). When only the
-    /// tray retry is still pending, this waits it out: killing the launch
-    /// inside the early-logon window would turn a recoverable boot race into
-    /// "autostart never shows".
+    /// act on: the tray icon, a widget window (widget windows legitimately
+    /// exist while hidden, so visibility is not the criterion), or a
+    /// registered global hotkey (F7 reveal; a bare launch opens settings).
+    /// When only the tray retry is still pending, this waits it out: killing
+    /// the launch inside the early-logon window would turn a recoverable
+    /// boot race into "autostart never shows".
     /// </summary>
     private async Task EnsureStartupProducedUsableSurfaceAsync()
     {
+        Task<bool>? trayCreation = _trayIconCreationTask;
         if (!IsStartupLifelineEstablished &&
             WidgetManager?.LoadedWidgetCount == 0 &&
-            _trayIconCreationTask is { } trayCreation)
+            trayCreation is { } pendingTrayCreation)
         {
-            while (!trayCreation.IsCompleted)
+            while (!pendingTrayCreation.IsCompleted)
             {
                 await Task.Delay(500);
             }
@@ -182,6 +222,7 @@ public partial class App
 
         if (IsStartupLifelineEstablished)
         {
+            WatchShellAboveAppTrayFailure(trayCreation);
             return;
         }
 
@@ -192,10 +233,41 @@ public partial class App
             // boxes, and marking the lifeline here also retires the watchdog.
             Log("[Startup] Tray surface unavailable; widget surfaces carry the session");
             MarkStartupLifelineEstablished();
+            WatchShellAboveAppTrayFailure(trayCreation);
+            return;
+        }
+
+        // A registered global hotkey keeps an interactive entry alive even
+        // with the tray gone. Treating that session as fatal turns an
+        // environment quirk (UIPI blocks Shell_NotifyIcon under an elevated
+        // desktop) into "the app never opens" on every launch; degrade
+        // instead, and let the shell-elevation notice explain the tray.
+        if (GlobalHotkeyService?.IsRegistered == true)
+        {
+            Log("[Startup] Tray surface unavailable; global hotkey carries the session");
+            MarkStartupLifelineEstablished();
+            WatchShellAboveAppTrayFailure(trayCreation);
             return;
         }
 
         FailStartup("no usable tray or widget surface was created", exception: null);
+    }
+
+    /// <summary>
+    /// When the shell runs above this process's integrity, a lost tray has
+    /// an environmental cause worth explaining to the user. No-op on
+    /// mismatch-free sessions or healthy trays; the notice helper itself
+    /// bails out if the tray retry eventually succeeds.
+    /// </summary>
+    private void WatchShellAboveAppTrayFailure(Task<bool>? trayCreation)
+    {
+        if (trayCreation is null ||
+            _startupElevationAssessment.Mismatch != ShellIntegrityMismatch.ShellAboveApp)
+        {
+            return;
+        }
+
+        _ = ShowShellElevationNoticeWhenTrayFailsAsync(trayCreation);
     }
 
     /// <summary>

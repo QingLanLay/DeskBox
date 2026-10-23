@@ -481,4 +481,57 @@ public sealed class AppUpdateServiceTests : IDisposable
 
         Assert.False(AppUpdateService.IsManifestUsable(manifest));
     }
+
+    public static TheoryData<string, string> AppCultureToInstallerLanguageCases => new()
+    {
+        { LocalizationService.LanguageChinese, "chinesesimplified" },
+        { LocalizationService.LanguageChineseTraditional, "chinesetraditional" },
+        { LocalizationService.LanguageEnglish, "english" },
+        { LocalizationService.LanguageJapanese, "japanese" },
+        { LocalizationService.LanguageGerman, "german" },
+        { LocalizationService.LanguagePortuguese, "brazilianportuguese" },
+        { LocalizationService.LanguageHindi, "hindi" },
+        { LocalizationService.LanguageSpanish, "spanish" },
+        { LocalizationService.LanguageFrench, "french" },
+        { LocalizationService.LanguageArabic, "arabic" },
+        { LocalizationService.LanguageBengali, "bengali" },
+        { LocalizationService.LanguageRussian, "russian" },
+        { LocalizationService.LanguageKorean, "korean" },
+    };
+
+    [Theory]
+    [MemberData(nameof(AppCultureToInstallerLanguageCases))]
+    public void InstallerLanguageMapping_CoversEveryAppLanguage(
+        string appCultureName,
+        string installerLanguage)
+    {
+        // Reverse of InstallLanguageCode in installer/DeskBox.iss (identical
+        // [Languages] in DeskBox.arm64.iss) — extend both sides together.
+        Assert.Equal(installerLanguage, AppUpdateService.MapAppCultureToInstallerLanguage(appCultureName));
+    }
+
+    [Fact]
+    public void InstallerLanguageMapping_RejectsValuesOutsideTheAppLanguageDomain()
+    {
+        Assert.Null(AppUpdateService.MapAppCultureToInstallerLanguage(null));
+        Assert.Null(AppUpdateService.MapAppCultureToInstallerLanguage(string.Empty));
+        Assert.Null(AppUpdateService.MapAppCultureToInstallerLanguage(LocalizationService.LanguageSystem));
+        Assert.Null(AppUpdateService.MapAppCultureToInstallerLanguage("zh-HK"));
+        Assert.Null(AppUpdateService.MapAppCultureToInstallerLanguage("fr-CA"));
+    }
+
+    [Fact]
+    public void InstallerLanguageMapping_AgreesWithTheUpdaterWhitelist()
+    {
+        // The app-side mapping and the updater-side whitelist are two halves
+        // of one contract; every mapped name must survive the whitelist so
+        // the /LANG pin can never be silently dropped for a shipped language.
+        foreach (object?[] row in AppCultureToInstallerLanguageCases)
+        {
+            string installerLanguage = (string)row[1]!;
+            Assert.Equal(
+                installerLanguage,
+                DeskBox.Updater.Program.ResolveInstallerLanguage(installerLanguage));
+        }
+    }
 }

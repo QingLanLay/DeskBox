@@ -13,6 +13,7 @@ using Microsoft.UI.Composition.SystemBackdrops;
 using Microsoft.UI.Input;
 using Microsoft.UI.Windowing;
 using Microsoft.UI.Xaml;
+using Microsoft.UI.Xaml.Automation;
 using Microsoft.UI.Xaml.Controls;
 using Microsoft.UI.Xaml.Controls.Primitives;
 using Microsoft.UI.Xaml.Input;
@@ -202,7 +203,8 @@ public sealed partial class ContentWidgetWindow : WidgetWindowBase, IDesktopWidg
         string summary = string.Join(" · ", summaryParts);
         bool hasText = !string.IsNullOrWhiteSpace(title) || !string.IsNullOrWhiteSpace(summary);
         ImageSource? backgroundImage = viewModel.HasVisibleCurrentImage
-            ? glance.GetCompactBackgroundImage()
+            ? glance.GetCompactBackgroundImage(
+                ResolveGlanceCompactBackgroundDecodeWidth())
             : null;
         return new WidgetCompactPresentation(
             title,
@@ -223,6 +225,28 @@ public sealed partial class ContentWidgetWindow : WidgetWindowBase, IDesktopWidg
             FullBleedOverlayOpacity: hasText ? viewModel.ReadabilityStrengthOpacity : 0,
             UseUniformFullBleedOverlay: true,
             FullBleedBackgroundOpacity: viewModel.BackgroundImageOpacity);
+    }
+
+    /// <summary>
+    /// Physical decode width for the glance capsule's full-bleed background:
+    /// the capsule's actual logical width (aligned mode tracks the panel,
+    /// otherwise the compact width) at the current DPI, with the same 1.25
+    /// headroom the expanded surface uses. The old fixed 768 under-decoded
+    /// wide capsules and paid ~3x on narrow ones.
+    /// </summary>
+    private int ResolveGlanceCompactBackgroundDecodeWidth()
+    {
+        double logicalWidth = UsesAlignedCompactWidth()
+            ? Config.Width
+            : Config.CompactWidth ?? WidgetCompactBoundsCalculator.SummaryWidth;
+        double scale = RootElement.XamlRoot?.RasterizationScale ?? 1;
+        if (!double.IsFinite(scale) || scale <= 0)
+        {
+            scale = 1;
+        }
+
+        double physicalWidth = logicalWidth * scale * GlanceImageDecodeSizeCalculator.CompactBackgroundSupersamplingFactor;
+        return (int)Math.Clamp(Math.Ceiling(physicalWidth), 320, 1600);
     }
 
     private WidgetCompactPresentation CreateSearchCompactPresentation(
@@ -738,11 +762,6 @@ public sealed partial class ContentWidgetWindow : WidgetWindowBase, IDesktopWidg
         TrayAnimation.SetOffsetOverride(offsetX, offsetY);
     }
 
-    public void SetTrayAnimationEdgeFade(bool enabled)
-    {
-        TrayAnimation.SetEdgeFadeOverride(enabled);
-    }
-
     public void CancelTrayAnimationAndRestorePosition()
     {
         if (!Visible && IsHideAnimationRunning)
@@ -809,6 +828,7 @@ private bool PrepareTrayShowAnimationCore(bool restoreBoundsForCurrentTopology)
 
     public void ShowPreparedAtDesktopLayer(bool persistVisibility = true)
     {
+        ReconcileStaleExpandedWidgetLayerLease();
         ShowWithoutActivation(persistVisibility);
         TrayAnimation.PrepareHiddenState();
         PushToBottom(showWindow: false);
@@ -817,6 +837,7 @@ private bool PrepareTrayShowAnimationCore(bool restoreBoundsForCurrentTopology)
 
     public void ShowPreparedRaisedFromTray(bool persistVisibility = true)
     {
+        ReconcileStaleExpandedWidgetLayerLease();
         ShowWithoutActivation(persistVisibility);
         TrayAnimation.PrepareHiddenState();
         HoldTemporaryTopMost(showWindow: false);
@@ -1286,6 +1307,27 @@ IsHideAnimationRunning = true;
         ToolTipService.SetToolTip(ContentWidgetShell.AddActionButton, localization.T("Widget.Tooltip.Add"));
         ToolTipService.SetToolTip(ContentWidgetShell.MoreActionButton, localization.T("Widget.Tooltip.More"));
         ToolTipService.SetToolTip(ContentWidgetShell.CloseActionButton, localization.T("Widget.FeatureWidget.Disable"));
+        ApplyTitleActionAccessibleNames();
+    }
+
+    /// <summary>
+    /// Accessible names for the shell title action buttons. The lock buttons are
+    /// state-aware (lock/unlock wording), so this runs on language change and
+    /// whenever the lock state is reapplied via ApplyLockActionIconState.
+    /// </summary>
+    private void ApplyTitleActionAccessibleNames()
+    {
+        var localization = App.Current.LocalizationService;
+        AutomationProperties.SetName(
+            ContentWidgetShell.PositionLockActionButton,
+            localization.T(_config.IsPositionLocked ? "Widget.UnlockPosition" : "Widget.LockPosition"));
+        AutomationProperties.SetName(
+            ContentWidgetShell.SizeLockActionButton,
+            localization.T(_config.IsSizeLocked ? "Widget.UnlockSize" : "Widget.LockSize"));
+        AutomationProperties.SetName(ContentWidgetShell.AddActionButton, localization.T("Widget.Tooltip.Add"));
+        AutomationProperties.SetName(ContentWidgetShell.MoreActionButton, localization.T("Widget.Tooltip.More"));
+        AutomationProperties.SetName(ContentWidgetShell.CloseActionButton, localization.T("Widget.FeatureWidget.Disable"));
+        AutomationProperties.SetName(ContentWidgetShell.CollapseActionButton, localization.T("Widget.Shell.Collapse"));
     }
 
     private void SetupEventHandlers()

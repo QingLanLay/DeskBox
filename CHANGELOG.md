@@ -1,33 +1,254 @@
 # Changelog
 
-## Unreleased
+## 1.5.9 - 2026-10-20
 
 ### English
 
-#### Interface
+#### New features
 
-- The global hotkey and search hotkey cards now carry an informational note explaining that hotkeys cannot reach DeskBox while the focused window runs elevated (for example, Task Manager) - a Windows security limitation, not a DeskBox fault.
+- **A recovery offer when your configuration gets wiped.** If DeskBox starts with missing or corrupted settings and a valid automatic backup survived, a one-time prompt shows the backup's date and widget count and offers to restore it or start fresh; closing the prompt also counts as starting fresh, and the question never returns. Until you choose, scheduled automatic backups stay paused (manual "back up now" keeps working, and the pending backup cannot be pushed out of retention) with a reminder at most once per app run, and the settings page now discloses that snapshots in a custom backup folder must be restored manually after a wipe.
+- **Windows 11-native right-click menus for files.** A single-column menu whose rows each carry an inline icon, laid out in Explorer's classic order and rendered directly on acrylic (the tray menu shares the material); an "Open with" submenu lists real associated apps — including UWP ones — with their icons and a "Choose another app" fallback; the blank-area menu gains a "New" submenu (folder plus ShellNew-registered types) and separate "View"/"Sort by" submenus; native ZIP support covers compress (with tar variants and multi-select) and extract-all. Namespace shortcuts (This PC, Recycle Bin, Control Panel) inherit their target's verbs — the Recycle Bin shortcut can be emptied right from its menu (greyed out when already empty), every item gains "Create shortcut", and options Windows never offered there (Open file location, Compress) are hidden.
+- **The Recycle Bin shortcut in a box accepts drops as deletes.** Drag files onto it — from the desktop, Explorer, or another box — and they go to the Recycle Bin with the same confirmation Windows itself would show; the shortcut's empty/full icon updates right after you empty the bin or drop something in.
+- **Drag Shell locations into boxes to create shortcuts.** Dropping Recycle Bin, This PC, and similar Explorer locations onto a box now creates a working shortcut, with toast feedback when the source has nothing to offer or is busy.
+- **A redesigned first-run experience.** The onboarding opens with a three-piece logo assembly animation and a file-drop scene, and shows the real managed storage path with move/paste hints.
+- **Expanded widgets can shrink twice as small** — the minimum size drops from 50 to 25 DIP.
+- **Korean language support.** The interface, installer, and first-run experience now ship in Korean alongside the existing 12 languages; the system locale is honored automatically.
+
+#### Fixes
+
+- Drags no longer freeze the app in callback-heavy moments — tray commands, virtual-file drops, shortcut launch drags; the right-click drag chooser no longer loses its "Open with" entry, and drag-launched shortcuts only accept command lines that point to files on disk.
+- A short widget docked to the screen edge no longer jumps to a corner on every reveal: the "wildly offscreen" test now measures the work-area overlap, so edge-docked bars and strips are not mistaken for lost windows.
+- Widget positions survive display-topology changes: a stale layout snapshot can no longer overwrite the user's latest placement, and fallback "shelter" geometry is never promoted to authoritative intent.
+- Switching group tabs no longer leaves the capsule slow to expand on re-entry: the swapped-in member's expansion layout is warmed at urgent priority while the capsule settles, and the hover-expand wait has a real hard cap again.
+- Hover-revealed buttons are removed from the Tab order — an invisible focus ring can no longer trigger them with the spacebar.
+- Shortcut "Open file location" now opens the target's location; executables no longer offer an "Open with" the system would reject; the "Choose another app" dialog actually opens, and the app-enumeration crash behind it is fixed.
+- Right-click menu positioning lands on the cursor across edge, lower-screen, and centered scenarios without drifting or covering the icon.
+- Revealing a widget shortly after hiding it no longer stutters: the memory trim that follows a hide now waits 30 seconds instead of 3 and skips small gains, so a quick hide-and-show round trip stops paying the quarter-second page-in.
+- Idle memory reclaim behaves again: the first trim of each idle stretch lands seconds after you stop interacting, and repeat trims inside the same stretch back off to a five-minute safety cadence — ending the twenty-second trim-and-refault churn that could sit on a noticeable slice of a CPU core with widgets on screen.
 
 ### 中文
 
-#### 界面
+#### 新功能
 
-- 全局快捷键与搜索快捷键卡片新增说明条：当前台窗口以管理员身份运行（例如任务管理器）时，Windows 会出于安全屏蔽全局快捷键——这是系统限制，并非 DeskBox 故障。
+- **配置被清空后的恢复提议。** DeskBox 启动时若发现设置缺失或损坏、且有一份有效的自动备份幸存，会弹出一次性询问窗（列明备份时间与格子数量）：可从备份恢复，也可全新开始；直接关窗同样视为全新开始，此后不再追问。做出选择前定时自动备份保持暂停（手动“立即备份”不受影响，待决议的备份也不会被保留策略挤出），每次运行至多提醒一次；设置页同时披露：自定义备份目录中的快照不会被自动提议，需手动从“备份与还原 > 本机快照”恢复。
+- **文件右键菜单换装 Windows 11 原生形态。** 单竖列菜单、每行行内图标，按资源管理器经典序排列，直出毛玻璃材质（托盘菜单同享）；「打开方式」子菜单列出真实关联应用（含 UWP）并带图标，尾部「选择其他应用」兜底；空白处菜单新增「新建」子菜单（文件夹 + ShellNew 注册表同源项），「查看」「排序」拆分独立子菜单；原生 ZIP 支持压缩（含 tar 变体与多选打包）与全部解压缩。命名空间快捷方式（此电脑/回收站/控制面板）继承目标动词——回收站快捷方式可直接「清空回收站」（已空时置灰），全部条目新增「创建快捷方式」，Windows 本就不提供的目标选项（打开文件位置、压缩）相应隐藏。
+- **格子内的回收站快捷方式成为删除投放目标。** 从桌面、资源管理器或其它格子把文件拖到回收站快捷方式上即移入回收站（确认框与 Windows 一致）；清空回收站或投放后，快捷方式的空/满图标即时刷新。
+- **Shell 位置拖入格子即建快捷方式。** 回收站、此电脑等资源管理器位置拖到格子上直接创建可用快捷方式；来源无内容或正忙时给出 toast 提示。
+- **开屏引导全新改版。** 三块拼片 logo 组装动画开场，文件投放场景演示，展示真实托管存储路径及移动/粘贴提示。
+- **展开格子可缩得更小**——最小尺寸从 50 降至 25 DIP。
+- **新增韩语界面。** 界面、安装器与开屏引导新增韩语，与既有 12 种语言并列；系统区域设置为韩语时自动跟随。
 
+#### 修复
 
-## Unreleased
+- 拖拽不再在回调密集场景卡死（托盘命令、虚拟文件投放、快捷方式拖启动）；右键拖放选择菜单不再丢失「打开方式」选项；拖启动的快捷方式只接受指向磁盘真实存在文件的命令行。
+- 贴屏幕边缘的矮格子不再每次唤出跳到角落：「严重离屏」判定改为按工作区交集测量，贴边的长条/窄条不再被误认成丢失窗口。
+- 格子位置扛得住显示器拓扑变化：过期布局快照无法再覆盖用户最近一次手动摆放，兜底"避难"几何也永不冒充用户意图。
+- 切换分组标签后胶囊不再迟迟不展开：换入成员的展开布局在胶囊落定期间以紧急优先级预热，悬停展开的等待重新有了真正的硬上限。
+- 悬停才显现的按钮移出 Tab 键序——不可见的焦点环不再能凭空格误触发。
+- 快捷方式「打开文件位置」改为打开目标所在位置；可执行文件不再展示注定被系统拒绝的「打开方式」；「选择其他应用」切实可用，其背后的枚举硬崩溃一并修复。
+- 右键菜单定位在贴边、下屏、居中等场景都落在光标处，不再漂移或遮盖图标。
+- 隐藏后马上唤出不再卡顿：隐藏后的内存修剪宽限从 3 秒放宽到 30 秒并跳过小额修剪，快速隐藏/唤出的来回不再付出约四分之一秒的内存回迁。
+- 闲置内存回收回到“停手几秒就降”：每个闲置时段的首次修剪在安静期后立刻执行，同时段内的后续修剪退为 5 分钟兜底节律——终结此前约 20 秒一次“修剪—回迁”空转（常驻格子时可吃掉可观的 CPU）。
+
+## 1.5.8 - 2026-10-14
 
 ### English
 
-#### Interface
+#### Fixes
 
-- The global hotkey and search hotkey cards now carry an informational note explaining that hotkeys cannot reach DeskBox while the focused window runs elevated (for example, Task Manager) - a Windows security limitation, not a DeskBox fault.
+- More accurate administrator notices. The "running as administrator" notice now appears only when DeskBox runs above the shell, so fully elevated desktops — for example company-managed computers — no longer see it. When it appears, it closes the elevated instance in one click and provides the steps to restart with normal privileges, including how to clear a shortcut's "Run as administrator" checkbox. Autostart continues to restart itself with normal privileges silently. Available in all 12 languages.
+- One-click updates no longer bring DeskBox back as administrator: the updater restarts the app at the shell's own level whenever the shell offers a standard-user context, so the app no longer restarts as administrator after an update on machines where it ran elevated.
+- When Explorer itself runs elevated above DeskBox, the app stays usable: the reveal hotkey and settings keep working, an explanatory notice replaces the untranslated failure box, and the rare fatal-startup dialog is localized and lists the diagnosed environment causes (elevated Explorer, compatibility layers, shortcut run-as).
+- Maintenance-wave drag and startup fixes: dragging Todo items no longer crashes; switching groups no longer loses stacked-member icons; cutting a subfolder and pasting it into the parent folder no longer hangs; auto-organization rules stay enabled across restarts instead of being silently switched off.
+- When the desktop repeatedly crashes, DeskBox no longer restarts in a loop at sign-in: a startup ledger breaks the cycle, and diagnostics now include recent DeskBox and Explorer crash events for support.
+- Settings: an update-download failure no longer raises an error when another dialog happens to be open at the same time.
+- The drag-and-drop diagnostic detects a shortcut-level "Run as administrator" flag — an elevation source invisible to the compatibility-layer scan — and explains exactly how to clear it.
+- An instance relaunched with normal privileges can be ended again by an unelevated Task Manager.
 
 ### 中文
 
+#### 修复
+
+- 更准确的管理员运行提示。「以管理员身份运行」提示现在只在 DeskBox 以高于资源管理器的权限运行时出现，因此整台电脑都以管理员权限运行的环境（例如公司统一管理的电脑）不再显示该提示。提示出现时，可一键退出当前实例，并按照步骤以普通权限重新打开，其中包含取消快捷方式"以管理员身份运行"勾选的方法；开机自启仍会自动以普通权限重启。全部 12 种语言同步。
+- 一键更新不再把 DeskBox 以管理员身份带回来：只要资源管理器提供标准用户环境，更新器就按其权限级别重启应用，此前以管理员运行的电脑，更新后不会再以管理员身份重新启动。
+- 资源管理器以管理员运行（高于 DeskBox）时，应用保持可用：唤出热键和设置继续工作，说明弹窗替代原先未本地化的错误提示；极少出现的启动失败提示已本地化，并列出诊断到的环境成因（资源管理器提权、兼容层、快捷方式管理员勾选）。
+- 维护波次的拖拽与启动修复：拖动待办不再崩溃；切换分组不再丢失叠放成员图标；剪切子文件夹后粘贴回主目录不再卡死；自动整理规则跨重启保持开启，不再被悄悄关闭。
+- 桌面反复崩溃时，DeskBox 不再在登录时反复重启：启动账本切断循环，诊断包新增近期的 DeskBox 与资源管理器崩溃事件，便于支持排查。
+- 设置：更新下载失败时若恰好有其它对话框打开，不再报错。
+- 拖拽诊断可识别快捷方式级"以管理员身份运行"勾选——这是兼容层扫描看不到的提权来源——并给出精确的取消方法。
+- 以普通权限重启的实例重新可以被未提权的任务管理器结束。
+
+## 1.5.7 - 2026-10-13
+
+### English
+
+#### Fixes
+
+- Exiting from the tray now reliably ends the process. On machines where the system's application-exit handshake stalls — typically Windows with UAC fully disabled and an elevated Explorer — a background DeskBox process could stay resident after "exit": the tray vanished and a restart worked, but the leftover process slowly ate memory and kept the right-click menu proxy alive beside it. Every shutdown path now carries a delayed hard-exit backstop, and the elevation notice and search popup close along with shutdown.
+- Windows 10: the "drag out" card under File widgets → drag-and-drop behavior shows its title and question-mark tip again, and the Windows 10 explanation renders in the description area under the title instead of stretching the card out of shape or spilling outside it on scaled, narrower windows.
+- Long auxiliary texts in settings cards (the cloud-backup remote-path hint, runtime-health detail, and backup snapshot summaries) are width-capped so they can no longer push a card's title aside.
+- Dialogs and preview cards — the desktop-organization abandon dialog, its preview cards, and the hotkey recorder — follow the app's theme override again instead of the raw system theme, and desktop-organization rule rows rebuild when the applied theme flips.
+- Desktop-organization rule rows are clickable again; a leftover chevron (double arrows) and a click guard that swallowed every row click shipped together in 1.5.6.
+- Store packaging: the display-name resource consistently resolves to the reserved store name ("DeskBox Widgets"), completing the 1.5.6 packaging follow-up.
+
+### 中文
+
+#### 修复
+
+- 从托盘退出后进程必定结束。在系统"应用退出"握手机制失灵的机器上（典型为 UAC 完全关闭且资源管理器以管理员运行），退出后可能残留一个后台进程：托盘消失、再次启动也正常，但残留进程会慢慢吃内存，还带着右键菜单代理一起驻留。现在所有退出路径都带延迟强制结束的保底，提权提示窗和搜索弹窗也会随退出关闭。
+- Windows 10：「文件格子 → 文件拖放行为 → 拖出格子时」卡片的标题和问号提示恢复显示；Windows 10 说明文字改在标题下方的描述区渲染，不再把卡片撑变形，也不再有文字溢出卡片（高缩放、较窄窗口下同样安全）。
+- 设置卡片里的长辅助文字（云备份远端路径提示、运行时健康详情、备份快照摘要）限宽显示，不会再把卡片标题挤开。
+- 对话框与预览卡——桌面整理的放弃确认、预览卡、热键录制弹窗——重新跟随应用主题覆盖而非系统主题；应用主题切换时桌面整理规则行同步重建配色。
+- 桌面整理规则行恢复可点击；1.5.6 曾同时带入残留箭头（双箭头）和吞掉整行点击的守卫。
+- 商店包：显示名资源统一回退到保留名（DeskBox Widgets），完成 1.5.6 打包收尾。
+
+## 1.5.6 - 2026-10-12
+
+### English
+
+#### New features
+
+- Widgets belong to their display, and every display combination remembers its own layout. Drag a widget to a screen and that screen becomes its home; unplug the display and, after a short grace period, its widgets reflow onto a remaining screen (or collapse into capsules, if you set it so); plug back in and every widget returns to its exact spot. Combinations seen for the first time seed sensibly instead of piling onto the primary.
+- Layouts reflow elastically across scales. Topology profiles record sizes and anchors per display instead of raw pixels, so 1080p ↔ 4K switches, remote sessions, and DPI round-trips reflow the arrangement instead of stretching widgets or leaving whitespace gaps; existing profiles migrate once, in place.
+- Backup restores adapt to the machine they land on. A full restore onto a different PC or account re-registers startup per the backup's state (deliberate Windows-level disables are never overridden) and rebases account-local paths — storage root, snapshot folder, default-storage widgets — into the current profile; the completion notice reports what was adapted.
+- Windows-side display changes no longer shuffle widgets: primary-display switches, resolution and scale changes, monitor rearrangement, lock-screen re-enumeration, and full-screen games that change the resolution all leave placements alone, and late-arriving dock or DisplayLink screens no longer trigger the crowd-then-scatter dance.
+- Elevated launches explain themselves. Running as administrator blocks Explorer drag and drop (a Windows security boundary), so an elevated launch now offers a one-click restart with normal privileges; autostart instances restart themselves and the compatibility flag that kept relaunching elevated is cleared.
+- Pin widgets to a display. A new Displays page shows an arrangement preview with per-screen widget lists, flashes a number on each screen to identify it, pins everything to the current layout in one click, and sets the default display for new widgets; per-widget and per-group bindings from the context menu follow the display's hardware identity and survive renumbering.
+- Record your own hotkeys. Press-to-record editors capture any Win / Ctrl / Alt / Shift combination or a lone F1–F24 key — including chords Windows reserves for itself, like Win+V or Alt+Space; conflicts with the other hotkey are rejected with a clear message and risky combinations warn before saving.
+- Dress up your widgets: per-widget emoji or image icons, per-widget background images with fit and dim controls, border styles, three global background modes (follow material, unified image, or a panorama where each widget frames its slice), and a text-shadow toggle in Appearance.
+- Safer storage migration. Moving files into managed storage is copy-verified with a preview, per-phase progress, and resumable retry; every file is hash-checked on both sides before the path switches, and originals are never deleted.
+- Start silently: a new option launches DeskBox hidden alongside Windows, brought back by the first tray click, hotkey, or activation.
+- Weather widgets gain an icon-style picker (Fluent, DeskBox line-art, Meteocons Flat and Line) rendered identically on Windows 10 and 11, independent of the system emoji font.
+- More reveal animations: three new show/hide effects (Edge scale, Tilt, Wipe), a Spring easing, and staggered timing that slides a group's widgets in one after another.
+- Desktop files wait a configurable dwell — real-time to 12 hours — before auto-organization ingests them; managed-path choices that would misbehave (network, removable, system drive, desktop-overlapping) warn or are rejected up front.
+
+#### Platform
+
+- Updated the Windows App Runtime to 2.5.1 and the .NET runtime to 10.0.12, and lowered the minimum supported Windows 10 build to 19041 (version 2004).
+
+#### Fixes
+
+- Changing the primary display keeps every placed widget exactly where it is; only widgets set to always follow the main display move.
+- Round-tripping a resolution or scale change reproduces the exact previous layout; moves made in between are kept.
+- Brief display dropouts (a DP monitor powering down, a KVM switch, input flipping back within seconds) no longer trigger any reflow.
+- "Move all widgets to a display" is undoable: the info bar restores every widget's previous home, mode, and position, even if a display is unplugged before you undo.
+- Restoring a settings file on a different PC re-homes widgets by fallback heuristics without errors or lost widgets.
+- Store edition: backup restores no longer abort at the relaunch step — the restart goes through the packaged-app restart agent — and the update notice now also speaks Japanese, German, and Portuguese.
+- Traditional Chinese: the auto-organize success toast no longer ends with a stray character.
+- The settings search box keeps its rounded shape and icon inside the box when the window is widened.
+- Dragging files out of a widget on Windows 10 no longer pops Explorer's Copy / Move / Cancel picker, and the drag-out settings dropdown shows its options again on Native AOT builds.
+- The drag-out result hint knows whether modifiers could have flipped the outcome instead of always claiming "no modifiers".
+- Tray double-clicks no longer replay the toggle queue — a second click inside the double-click window completes quietly (feedback 237) — and an early-logon tray flyout retries its assignment on the tray cadence instead of failing startup (feedback 343).
+- The "new folder mapping" picker no longer comes up invisible after switching virtual desktops (issue 489); the "add file" picker no longer follows shortcuts — adding a desktop shortcut adds the .lnk itself (issue 458).
+- Memory and CPU housekeeping: the organization suppression ledger is capped and loads lazily; quarantined backups rotate; todo and quick-capture stores stream saves; the todo reminder scan stops re-reading unchanged stores; glance images decode with less headroom and rotation sets stream from disk so the framework cache cannot pin every frame; collapsed-widget ambient animations moved to compositor key-frames; a never-instantiated window was removed.
+- Hidden or docked widgets release the icons outside the rendering window, so they no longer pin bitmaps the cache already evicted (long-hide memory growth).
+- A compact capsule no longer stays expanded after the widget color picker is dismissed another way (issue 437); it also no longer collapses while a native context menu is open, and no longer snaps to the panel's bottom edge when collapsed after resizing the widget in expanded state.
+- Feedback submissions only count toward the cooldown on real success, and a stale server-side rate limit heals by rotating the anonymous client id (issue 449).
+- Search explains an all-empty file list when Everything is not connected instead of showing a blank state (feedback 291).
+- Quick Capture picks up clipboard images from WeChat, QQ, and browsers via raw PNG / CF_DIB fallback (feedback 335), and widgets following the global text size refresh the moment it changes.
+- Renaming a managed widget folder retries transient locks (antivirus, indexer) and reports clearly when a long-lived lock persists (feedback 240).
+- Cross-volume imports end with the truth: when the copy completed but a source file is still held open, the import completes with a warning instead of reading as total failure and inviting duplicate retries (feedback 236/316).
+- A managed-storage root on the desktop (or a subfolder) is rejected up front — the organizer would re-ingest its own folders.
+- Native AOT builds: the cloud-backup password box, weather error overlay, resize/move cursors, and the "transparency effects off" advisory all work again — each was a retail-only trim/manifest gap (Debug was unaffected); the weather binding surface is now guarded by a contract test.
+- The music widget no longer throws on stale session reads when a player exits mid-refresh — the recurring timeline exception noise in diagnostics is gone.
+- Diagnostics exports keep HRESULT hex codes readable instead of redacting them.
+- Mouse clicks on file tiles no longer paint a thick keyboard-style focus border.
+- Installers close a lingering thumbnail-proxy process during upgrades so an orphaned proxy cannot lock files.
+- A pending full restore can no longer apply without your answer: if the app exits while the confirmation dialog is open, the next launch discards it.
+- Deleting search results and network-drive widget folders always honors the Recycle Bin promise — volumes without one get the interactive Windows confirmation instead of a silent permanent delete.
+- Removing a todo / Quick Capture attachment can only delete copies that provably live in the managed attachment store, and they go to the Recycle Bin.
+- Closing a widget whose "move files back to the desktop" fails midway keeps the widget and explains what happened.
+- Files dragged out of a widget and dropped back shortly afterwards are no longer silently ignored when a previous drag's completion event was lost.
+- The restore launch skips its scheduled snapshot (the pre-restore archive already covers that state), and the completion notice only claims what actually happened.
+- The storage-migration dialog closes on Esc and places its primary action consistently; the feedback-submitted notice renders its border correctly in both themes.
+
+#### Interface
+
+- The settings window got an information-architecture pass: low-frequency settings fold into accordions, pages put fundamentals first, sections slide in and out like Windows' own Settings, entry cards are clickable across the whole row, and notices render as native info bars.
+- The file-stacking page is reorganized into two accordions — reveal mode first (with popover-only layout and visual-style options that freeze for inline reveal), then automatic stacking with its grouping rules; the master switch is gone and manual stacks are always available. The file-widgets overview shows the reveal mode inline, and the desktop storage-entry card moved to the bottom of the page.
+- Destructive actions ask before they act: dissolving a group confirms through a small flyout, dangerous buttons wear a consistent red style, restore confirmations default to the safe button, and folder-delete confirmations show the parent path.
+- Notifications deep-link to what they concern: update toasts open the About page, maintenance and folder-mapping notices route to their settings section, todo reminders carry reminder priority.
+- The first-run walkthrough was redrawn with system-managed transitions that respect the "disable animations" setting; jump-list entries group under the system-localized Tasks section.
+- Hiding widgets slides them fully out with a per-window fade at the screen edge; dragging and resizing read pointer positions from the input message, staying accurate across mixed-DPI setups.
+- Dragging files out of a widget shows a modifier-key hint (Shift moves, Ctrl copies) and a post-drop receipt of what actually ran; both are dismissible on the spot or from Settings.
+- Music widgets can hide the progress bar and times when the player provides no progress info, instead of showing a blank placeholder.
+- File lists respond across the whole row (list) or tile (icon view); empty widgets explain themselves with causes and fixes.
+- The remaining file pickers (attachments, widget images, backup restore, Everything browse) moved to the modern picker; all legacy dialogs are retired.
+- "Move to display" maps positions proportionally; menus and settings use Windows' friendly device names instead of display indexes. The Displays page refreshes live on plug/unplug, and the identify overlay closes on topology changes.
+- New widgets appear on the mouse's display by default or on a pinned one, falling back gracefully while it is offline.
+
+
+### 中文
+
+#### 新功能
+
+- 格子放在哪块显示器上，就属于哪块显示器；每种显示器组合各自记住布局。把格子拖到另一块屏，那块屏就成了它的归属；拔掉显示器后，经过短暂宽限，上面的格子会弹性重排后移到剩余屏（也可按设置收起为胶囊）；重新接上时每个格子分毫不差回到原位。首次出现的新组合会合理播种，不会全堆到主屏。
+- 布局随缩放弹性重排。拓扑档案改为按每屏参考系记录尺寸与锚点而非原始像素——1080p 与 4K 互切、远程会话、DPI 往返都按弹性规则重排，不再把格子拉得过大或留出大片空白；存量档案一次性就地迁移。
+- 备份还原适配落地的机器。整包还原到另一台电脑或账户时，开机自启按备份记录的状态重新注册（Windows 层面的主动禁用永不覆盖），账户本地路径（收纳根、快照目录、默认存储格子）迁入当前用户；完成通知说明做了哪些适配。
+- Windows 侧的显示器变化不再打乱格子：切主显示器、改分辨率缩放、重排显示器、锁屏重枚举、全屏游戏改分辨率都不挪格子；启动时晚到的扩展坞屏也不再触发”先挤到笔记本再散开”。
+- 管理员身份运行自我说明。提权启动无法与资源管理器拖拽（Windows 安全边界），会弹窗并提供一键”以普通权限重启”；开机自启实例自动降权重启，兼容性标记一并清除。
+- 把格子钉在指定显示器上。设置新增「显示器」页：排列预览、各屏格子清单、一键识别、一键固定到当前布局、新格子默认屏；格子与组也能右键绑定，绑定跟随硬件身份、不受重编号影响。
+- 自定义快捷键录制。全局与搜索快捷键支持按住即录——Win/Ctrl/Alt/Shift 任意组合或单独 F1–F24 都行，Win+V、Alt+Space 等系统保留组合也能录到；被另一快捷键占用的组合明确拒绝，高风险组合保存前先提示。
+- 装扮你的格子：表情或图片图标、每格背景图（契合度+明暗）、边框样式、三种全局背景模式（跟随材质/统一图片/按位置取景的全景），以及文字阴影开关。
+- 更安全的收纳迁移：预览、分阶段进度、可恢复重试，双侧哈希校验通过才切换路径，源文件绝不自动删除。
+- 静默启动：随 Windows 在后台启动，托盘点击、热键或激活即全部唤回。
+- 天气格子新增图标风格（Fluent/DeskBox 简笔/Meteocons 扁平/线框），Win10 与 11 观感一致，不再依赖系统 emoji 字体。
+- 更多显示动画：边缘缩放、倾斜、擦除三个新效果，弹簧缓动，以及一组格子逐个滑入的错峰时序。
+- 桌面整理可配置停留时间（实时到 12 小时）；收纳根选在网络/可移动/系统盘/桌面重叠路径会提前警告或直接拒绝。
+
+#### 平台
+
+- Windows App Runtime 升级到 2.5.1、.NET 运行时升级到 10.0.12；支持的 Windows 10 最低版本降到 19041（2004）。
+
+#### 修复
+
+- 在 Windows 里更换主显示器，已放置的格子纹丝不动；只有设为”始终在主显示器”的格子跟着走。分辨率缩放改回后布局与之前完全一致，期间手动挪过的保留新位置。
+- 显示器短暂掉线（DP 休眠、KVM 切换、输入源切走又切回）不再触发任何重排。
+- 设置页”全部移到此显示器”支持撤销：信息条恢复每个格子的归属、模式与位置，即使撤销前拔掉了目标屏也有效。
+- 在另一台电脑恢复设置文件时按回退启发式重新安置格子，不报错、不丢格子。
+- 商店版：备份还原不再在重启环节必败——改走打包应用重启代理；更新提示补齐日语、德语、葡萄牙语。
+- 繁体中文：自动整理成功提示不再带出多余乱码字符。
+- 设置窗口拉宽后，搜索框保持圆角造型、图标不跑出框外。
+- Windows 10 上从格子拖出文件不再弹出 Explorer 的”复制/移动/取消”选择框；Native AOT 版的”拖出格子时”下拉恢复显示选项。
+- 拖出结果提示能正确判断修饰键是否可翻转结果，不再永远提示”无修饰键”。
+- 托盘双击不再重放切换队列——双击窗口内的第二次点击静默完成（反馈 237）；早期登录的托盘右键菜单赋值被拒时按节奏重试并回退原生菜单，不再拖死启动（反馈 343）。
+- 「新建映射文件夹」选择框不再在切换虚拟桌面后隐身（issue 489）；「添加文件」不再跟随快捷方式——添加桌面快捷方式加入的是 .lnk 本身（issue 458）。
+- 内存与 CPU 治理一批：整理抑制账本加上限并懒加载；隔离备份轮转保留；待办/随记存储流式落盘；提醒扫描不再反复重读未变存储；一览图片降解码余量、轮换图集流式加载，框架缓存不再钉住每帧；胶囊环境动画改合成器关键帧；删除从未实例化的死窗口。
+- 长时间隐藏或停靠后，格子释放渲染窗口外的图标，不再钉住缓存已逐出的位图（长隐藏内存增长）。
+- 胶囊三连修：取色器经其他路径关闭后不再永久保持展开（issue 437）；系统右键菜单打开期间不再误收起；展开态调高度后收起不再跳到面板底边。
+- 反馈提交只有真正成功才计入冷却；服务端残留限流通过轮换匿名客户端 ID 自愈（issue 449）。
+- Everything 未连接时空结果列表给出说明，不再是无解释空白（反馈 291）。
+- 随记可接收微信、QQ、浏览器剪贴板里标准通道解不出的图片（PNG / CF_DIB 回退，反馈 335）；跟随全局字号的随记格子立即刷新。
+- 重命名受管文件夹对瞬时占用短暂重试，长驻占用给出明确提示（反馈 240）。
+- 跨盘拖入以真实结果收尾：复制完成仅个别源文件被占用时按”已完成”收尾并警告，不再读作整体失败诱导重复拖入（反馈 236/316）。
+- 桌面（或子文件夹）作为收纳根会被前端直接拒绝——桌面整理会把受管文件夹重新吞回自身。
+- Native AOT 版一批恢复：云备份密码框、天气错误遮罩、缩放/移动光标、透明效果提示——均为零售裁剪/清单缺口（Debug 不受影响）；天气绑定面已由契约测试守护。
+- 音乐格子不再在播放器退出瞬间因陈旧会话读取抛异常——诊断里的时间轴异常噪音消除。
+- 诊断导出保留 HRESULT 十六进制错误码可读性。
+- 鼠标点击文件瓦片不再出现键盘式粗焦点框。
+- 升级安装会关闭残留的缩略图代理进程，孤儿代理不再锁文件卡安装。
+- 待定全量还原不再会在无人确认下自动执行：确认框开着时应用退出，下次启动直接丢弃。
+- 删除搜索结果与网络盘格子文件夹始终兑现”回收站”承诺——无回收站的卷改走系统交互确认，不再静默永久删除。
+- 移除待办/随记附件只可能删除确凿位于托管附件目录内的副本，且走回收站。
+- 关闭格子时”移回桌面”中途失败会保留格子并说明原因。
+- 拖出后短时间内拖回原处的文件，不再因上一次拖动完成事件丢失被静默忽略。
+- 应用还原的那次启动跳过计划快照（pre-restore 档案已覆盖）；完成通知只陈述实际发生的事。
+- 收纳迁移对话框支持 Esc、主操作位置统一；反馈提交通知边框双主题正确渲染。
+
 #### 界面
 
-- 全局快捷键与搜索快捷键卡片新增说明条：当前台窗口以管理员身份运行（例如任务管理器）时，Windows 会出于安全屏蔽全局快捷键——这是系统限制，并非 DeskBox 故障。
+- 设置窗口做了一轮信息架构梳理：低频设置收进风琴卡、页面基础项靠前、分区切换带 Windows 设置式滑入滑出、入口卡整行可点、说明卡改用原生信息条。
+- 文件叠放页重组为两个风琴——展开方式在前（弹窗布局与视觉样式仅弹出式可配、布局内展开时冻结），自动叠放与归组规则在后；主开关移除、手动叠放恒可用。文件格子总览行内联展开方式，”桌面上的收纳文件入口”卡移到页面最底部。
+- 危险操作先确认再执行：解散组经飞出层确认、危险按钮统一红色、还原确认默认安全按钮、删除确认显示父路径。
+- 通知直达所关心处：更新 toast 直开”关于”页，维护与映射通知路由到对应分区，待办提醒带正确优先级。
+- 首次运行引导重绘，换页动画改系统托管并尊重”关闭动画”设置；跳转列表归入系统本地化”任务”分组。
+- 隐藏格子完整滑出并在屏幕边缘逐个渐隐；拖动与调整大小直接读取输入消息指针位置，混合 DPI 多屏下精确。
+- 从格子拖出文件时显示修饰键提示（Shift 移动、Ctrl 复制）与实际操作回执；均可当场 ✕ 关闭或在设置里关闭。
+- 音乐格子可在播放器不提供进度信息时隐藏进度条与时间，不再显示空白占位。
+- 文件列表整行/整瓦片响应悬停、选中与拖放；空格子自我解释原因与处理办法。
+- 剩余文件选择入口（附件、格子图片、备份还原、Everything 浏览）统一改用现代选择器，旧对话框全部退役。
+- “移到显示器”按比例映射位置，菜单与设置改用设备友好名替代序号；「显示器」页拔插实时刷新，识别浮层随拓扑变化即关。
+- 新格子默认出现在鼠标所在屏，也可固定到指定屏；固定的屏离线时优雅回落并保留选择。
 
 
 ## 1.5.5 - 2026-09-22

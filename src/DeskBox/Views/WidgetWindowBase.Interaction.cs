@@ -121,8 +121,17 @@ public abstract partial class WidgetWindowBase
         {
             TopMostSafetyTimer.Stop();
         }
+        _safetyRestoreLeaseDeferrals = 0;
         TopMostSafetyTimer.Start();
     }
+
+    private static int _safetyForceRestoreLoggedThisSession;
+
+    // Lease deferrals are bounded (unlike the four routine defer predicates,
+    // which re-arm indefinitely by design): if the lease's owner gave up, the
+    // net must still reach the window within a few intervals.
+    private const int MaxSafetyRestoreLeaseDeferrals = 3;
+    private int _safetyRestoreLeaseDeferrals;
 
     private void TopMostSafetyTimer_Tick(DispatcherQueueTimer sender, object args)
     {
@@ -139,18 +148,46 @@ public abstract partial class WidgetWindowBase
         if (!IsAtDesktopLayer &&
             App.Current.WidgetManager is not { WidgetsRaisedFromTray: true })
         {
-            if (WidgetTemporaryRaiseLeasePolicy.ShouldDeferSafetyRestore(
-                    IsDragging,
-                    IsResizing,
-                    HasBlockingFlyoutOpen(),
-                    App.Current.WidgetManager is { IsWidgetInteractionActive: true }))
+            // The manager's temporary-raise lease owns this window's descent
+            // (settle ~2.3s plus busy retries) and cancels this timer when it
+            // lands; deferring while it is held stops the net from stealing
+            // the restore 300ms early on every startup raise.
+            bool routineDefer = WidgetTemporaryRaiseLeasePolicy.ShouldDeferSafetyRestore(
+                IsDragging,
+                IsResizing,
+                HasBlockingFlyoutOpen(),
+                App.Current.WidgetManager is { IsWidgetInteractionActive: true });
+            bool leaseDefer = IsRaisedFromManager &&
+                _safetyRestoreLeaseDeferrals < MaxSafetyRestoreLeaseDeferrals;
+            if (routineDefer || leaseDefer)
             {
-                App.LogVerbose($"[ZOrder] {LogPrefix} safety timer: defer restore hwnd=0x{HWnd.ToInt64():X}");
+                if (leaseDefer && !routineDefer)
+                {
+                    _safetyRestoreLeaseDeferrals++;
+                }
+
+                App.LogVerbose(
+                    $"[ZOrder] {LogPrefix} safety timer: defer restore hwnd=0x{HWnd.ToInt64():X} " +
+                    $"routine={routineDefer} lease={leaseDefer}");
                 sender.Start();
                 return;
             }
 
-            App.Log($"[ZOrder] {LogPrefix} safety timer: force restore hwnd=0x{HWnd.ToInt64():X}");
+            // The restore itself is routine — the normal descent path
+            // missed and this net is the designed backstop. Only the
+            // first hit per session stays at the default level so a
+            // regression still surfaces in field logs.
+            string forceRestoreLine =
+                $"[ZOrder] {LogPrefix} safety timer: force restore hwnd=0x{HWnd.ToInt64():X}";
+            if (System.Threading.Interlocked.Exchange(ref _safetyForceRestoreLoggedThisSession, 1) == 0)
+            {
+                App.Log(forceRestoreLine);
+            }
+            else
+            {
+                App.LogVerbose(forceRestoreLine);
+            }
+
             RestoreDesktopLayer(force: true);
         }
     }
@@ -231,9 +268,20 @@ public abstract partial class WidgetWindowBase
     protected void ClearTopMostOnly()
     {
         IsRaisedFromManager = false;
-        IsAtDesktopLayer = true;
-        IntPtr foreground = WidgetLayerService.ClearTopMostPreservingForeground(HWnd);
-        App.LogVerbose($"[ZOrder] {LogPrefix} ClearTopMostOnly hwnd=0x{HWnd.ToInt64():X} fg=0x{foreground.ToInt64():X}");
+        IntPtr foreground = WidgetLayerService.ClearTopMostPreservingForeground(
+            HWnd,
+            out RelativeLayerRestoreDisposition disposition);
+        // PreservePeerOrder deliberately leaves the window at its current
+        // level: raised before the restore, still raised after it. Marking it
+        // bedded here would blind the Deactivated funnel that owns its later
+        // descent (the flyout-Esc lingering window). The placed branches
+        // (DesktopBottom / BehindForeground) end on a resting window.
+        if (disposition != RelativeLayerRestoreDisposition.PreservePeerOrder)
+        {
+            IsAtDesktopLayer = true;
+        }
+
+        App.LogVerbose($"[ZOrder] {LogPrefix} ClearTopMostOnly hwnd=0x{HWnd.ToInt64():X} fg=0x{foreground.ToInt64():X} disposition={disposition}");
         App.Current.WidgetManager?.QueueIdleWidgetZOrderNormalization(
             $"{LogPrefix}-desktop-layer-restored");
     }
@@ -250,7 +298,10 @@ public abstract partial class WidgetWindowBase
         SimplifyBackdropForInteraction();
         HasMovedTitleBarDrag = false;
         DisplayChangeWatcher?.SuppressRestore();
-        Win32Helper.GetCursorPos(out InitialCursorPt);
+        if (!Win32Helper.TryGetPointerScreenPoint(HWnd, RootElement, e, out InitialPointerPt))
+        {
+            Win32Helper.GetCursorPos(out InitialPointerPt);
+        }
         RectInt32 initialBounds = GetActualWindowBounds();
         InitialWindowPos = new PointInt32(initialBounds.X, initialBounds.Y);
         InitialWindowSize = new SizeInt32(initialBounds.Width, initialBounds.Height);
@@ -280,9 +331,14 @@ public abstract partial class WidgetWindowBase
             return;
         }
 
-        Win32Helper.GetCursorPos(out var currentPt);
-        int deltaX = currentPt.X - InitialCursorPt.X;
-        int deltaY = currentPt.Y - InitialCursorPt.Y;
+        if (!Win32Helper.TryGetPointerScreenPoint(HWnd, RootElement, e, out var currentPt) &&
+            !Win32Helper.GetCursorPos(out currentPt))
+        {
+            e.Handled = true;
+            return;
+        }
+        int deltaX = currentPt.X - InitialPointerPt.X;
+        int deltaY = currentPt.Y - InitialPointerPt.Y;
         int dragDistanceSquared = (deltaX * deltaX) + (deltaY * deltaY);
 
         if (!HasMovedTitleBarDrag)
@@ -423,8 +479,7 @@ public abstract partial class WidgetWindowBase
             CompleteCompactArrangementDrag();
             RectInt32 finalBounds = GetActualWindowBounds();
             finalBounds = CompleteExpandedWidgetDrag(finalBounds);
-            CapturePositionAnchor(finalBounds.X, finalBounds.Y, finalBounds.Width, finalBounds.Height);
-            UpdateConfigBoundsFromPhysical(finalBounds.X, finalBounds.Y, finalBounds.Width, finalBounds.Height, persist: true);
+            CommitUserPlacementFromWindow(WidgetPlacementSource.Drag);
             if (_targetCollapsed)
             {
                 // The pointer is still resting on the just-dropped capsule; an
@@ -485,7 +540,10 @@ public abstract partial class WidgetWindowBase
         ResizeDirection = direction;
         DisplayChangeWatcher?.SuppressRestore();
         OnResizeStart();
-        Win32Helper.GetCursorPos(out InitialCursorPt);
+        if (!Win32Helper.TryGetPointerScreenPoint(HWnd, RootElement, e, out InitialPointerPt))
+        {
+            Win32Helper.GetCursorPos(out InitialPointerPt);
+        }
         RectInt32 initialBounds = GetActualWindowBounds();
         InitialWindowPos = new PointInt32(initialBounds.X, initialBounds.Y);
         InitialWindowSize = new SizeInt32(initialBounds.Width, initialBounds.Height);
@@ -508,7 +566,8 @@ public abstract partial class WidgetWindowBase
             return;
         }
 
-        if (Win32Helper.GetCursorPos(out var currentPt))
+        if (Win32Helper.TryGetPointerScreenPoint(HWnd, RootElement, e, out var currentPt) ||
+            Win32Helper.GetCursorPos(out currentPt))
         {
             QueueInteractiveResizePointer(new PointInt32(currentPt.X, currentPt.Y));
         }
@@ -517,8 +576,8 @@ public abstract partial class WidgetWindowBase
 
     private RectInt32 ResolveInteractiveResizeBounds(PointInt32 currentPt)
     {
-        int deltaX = currentPt.X - InitialCursorPt.X;
-        int deltaY = currentPt.Y - InitialCursorPt.Y;
+        int deltaX = currentPt.X - InitialPointerPt.X;
+        int deltaY = currentPt.Y - InitialPointerPt.Y;
 
         int newWidth = InitialWindowSize.Width;
         int newHeight = InitialWindowSize.Height;
@@ -704,8 +763,7 @@ public abstract partial class WidgetWindowBase
             CompleteCompactArrangementDrag();
             RectInt32 finalBounds = GetActualWindowBounds();
             finalBounds = CompleteExpandedWidgetDrag(finalBounds);
-            CapturePositionAnchor(finalBounds.X, finalBounds.Y, finalBounds.Width, finalBounds.Height);
-            UpdateConfigBoundsFromPhysical(finalBounds.X, finalBounds.Y, finalBounds.Width, finalBounds.Height, persist: true);
+            CommitUserPlacementFromWindow(WidgetPlacementSource.Drag);
             if (_targetCollapsed)
             {
                 _suppressHoverExpansionAfterDragUntilPointerExit = true;
@@ -746,7 +804,9 @@ public abstract partial class WidgetWindowBase
     {
         EndCompactInteraction();
         App.Current.WidgetManager?.EndWidgetInteraction(reason);
-        if (App.Current.WidgetManager?.RequestRestoreRaisedWidgetsToDesktopLayer(reason) == true)
+        // While the tray raised session is alive its restore monitor owns the
+        // layer; outside a session this window restores itself.
+        if (App.Current.WidgetManager is { WidgetsRaisedFromTray: true })
         {
             return;
         }

@@ -10,7 +10,6 @@ public static class DeskBoxDragData
 {
     public const string TextFormat = "DeskBox.Internal.Text.v1";
     public const string SourceFormat = "DeskBox.Internal.Source.v1";
-    public const string TodoColorMarkerFormat = "DeskBox.Todo.ColorMarker.v1";
     public const string SourceWidgetIdProperty = "DeskBoxSourceWidgetId";
     public const string SourcePathsProperty = "DeskBoxSourcePaths";
     public const string InternalFileDragTokenProperty =
@@ -45,32 +44,6 @@ public static class DeskBoxDragData
         dataPackage.SetText(normalizedText);
         dataPackage.SetData(TextFormat, normalizedText);
         dataPackage.SetData(SourceFormat, source);
-    }
-
-    public static void SetTodoColorMarker(DataPackage dataPackage, string colorMarker)
-    {
-        if (!string.IsNullOrWhiteSpace(colorMarker))
-        {
-            dataPackage.SetData(TodoColorMarkerFormat, colorMarker.Trim());
-        }
-    }
-
-    public static async Task<string?> TryGetTodoColorMarkerAsync(DataPackageView dataView)
-    {
-        if (!dataView.Contains(TodoColorMarkerFormat))
-        {
-            return null;
-        }
-
-        try
-        {
-            return await dataView.GetDataAsync(TodoColorMarkerFormat) as string;
-        }
-        catch (Exception ex)
-        {
-            App.Log($"[DragDrop] Failed to read todo color marker: {ex.Message}");
-            return null;
-        }
     }
 
     public static async Task<string?> TryGetTextAsync(DataPackageView dataView)

@@ -9,6 +9,7 @@ using Microsoft.UI.Xaml;
 using Microsoft.UI.Xaml.Controls;
 using Microsoft.UI.Xaml.Hosting;
 using Microsoft.UI.Xaml.Media;
+using Microsoft.UI.Xaml.Media.Animation;
 using Microsoft.UI.Xaml.Shapes;
 using WinRT.Interop;
 
@@ -51,7 +52,7 @@ public sealed partial class OnboardingWindow : Window
         _settingsService = settingsService;
         _localizationService = localizationService;
         _stepIndex = Math.Clamp(initialStep, 0, StepCount - 1);
-        _windowSubclassProc = WindowSubclassProc;
+        _windowSubclassProc = CallbackDepth.WrapSubclassProc(WindowSubclassProc);
         InitializeComponent();
         _localizationService.LanguageChanged += OnLanguageChanged;
         _settingsService.SettingsChanged += OnFeatureWidgetSettingsChanged;
@@ -98,6 +99,7 @@ public sealed partial class OnboardingWindow : Window
         Closed += (_, _) =>
         {
             _isClosed = true;
+            WindowsCompatibilityService.ReleaseTitleBarExtensions(this, _appWindow);
             StopSceneLoops();
             RemoveMinimumSizeHook();
             _localizationService.LanguageChanged -= OnLanguageChanged;
@@ -182,7 +184,7 @@ public sealed partial class OnboardingWindow : Window
             return;
         }
 
-        NavigateToStep(_stepIndex - 1, forward: false);
+        NavigateToStep(_stepIndex - 1);
     }
 
     private async void NextButton_Click(object sender, RoutedEventArgs e)
@@ -194,7 +196,7 @@ public sealed partial class OnboardingWindow : Window
 
         if (_stepIndex < StepCount - 1)
         {
-            NavigateToStep(_stepIndex + 1, forward: true);
+            NavigateToStep(_stepIndex + 1);
             return;
         }
 
@@ -214,7 +216,7 @@ public sealed partial class OnboardingWindow : Window
         Close();
     }
 
-    private void NavigateToStep(int newStep, bool forward)
+    private void NavigateToStep(int newStep)
     {
         if (newStep < 0 || newStep >= StepCount || newStep == _stepIndex || _isAnimating)
         {
@@ -230,7 +232,7 @@ public sealed partial class OnboardingWindow : Window
         // The scene stage stays mounted and morphs; only the text column swaps.
         ApplySceneState(newStep, animate: true);
         StartSceneLoops(newStep);
-        PlayTextColumnSwap(currentPanel, newPanel, forward);
+        PlayTextColumnSwap(currentPanel, newPanel);
 
         _stepIndex = newStep;
         _settingsService.Settings.OnboardingStepIndex = newStep;
@@ -241,80 +243,70 @@ public sealed partial class OnboardingWindow : Window
     }
 
     /// <summary>
-    /// Crossfades the copy column: the outgoing panel just fades, the incoming
-    /// one fades in with a soft 6px rise — no lateral motion, matching the
-    /// OOBE-style page cadence.
+    /// Swaps the copy column in a single layout pass: the outgoing panel
+    /// collapses immediately so the incoming one renders straight at its
+    /// final vertically-centered position. The previous cross-dissolve kept
+    /// both panels laid out for ~460ms — the Grid cell stayed at the taller
+    /// outgoing height, so the incoming copy first appeared at the outgoing
+    /// title's offset and then visibly jumped when the cell re-centered on
+    /// collapse. A short opacity-only fade (at the final position, no offset)
+    /// keeps the swap from reading as a hard cut. Storyboards are used
+    /// instead of raw visual animations because the incoming panel was just
+    /// uncollapsed and its visual can still be rebuilt under StartAnimation,
+    /// silently dropping the animation and leaving the panel blank until the
+    /// completion timeout snaps it on.
     /// </summary>
     private void PlayTextColumnSwap(
         FrameworkElement outgoing,
-        FrameworkElement incoming,
-        bool forward)
+        FrameworkElement incoming)
     {
         if (!WindowsCompatibilityService.AreAnimationsEnabled)
         {
             outgoing.Visibility = Visibility.Collapsed;
-            ResetVisual(incoming);
+            incoming.Opacity = 1;
             _isAnimating = false;
             return;
         }
 
-        var outVisual = GetVisual(outgoing);
-        var inVisual = GetVisual(incoming);
-        var compositor = outVisual.Compositor;
+        outgoing.Visibility = Visibility.Collapsed;
+        incoming.Opacity = 0;
 
-        outVisual.StopAnimation("Opacity");
-        outVisual.StopAnimation("Translation");
-        inVisual.StopAnimation("Opacity");
-        inVisual.StopAnimation("Translation");
+        var storyboard = new Storyboard();
 
-        var exitEase = compositor.CreateCubicBezierEasingFunction(
-            new Vector2(0.7f, 0f), new Vector2(1f, 1f));
-        var enterEase = compositor.CreateCubicBezierEasingFunction(
-            new Vector2(0.16f, 1f), new Vector2(0.3f, 1f));
+        var fadeIn = new DoubleAnimation
+        {
+            To = 1,
+            Duration = new Duration(TimeSpan.FromMilliseconds(180)),
+            EasingFunction = new CubicEase { EasingMode = EasingMode.EaseOut }
+        };
+        Storyboard.SetTarget(fadeIn, incoming);
+        Storyboard.SetTargetProperty(fadeIn, nameof(UIElement.Opacity));
 
-        var fadeOut = compositor.CreateScalarKeyFrameAnimation();
-        fadeOut.Duration = TimeSpan.FromMilliseconds(130);
-        fadeOut.InsertKeyFrame(0f, 1f);
-        fadeOut.InsertKeyFrame(1f, 0f, exitEase);
-        outVisual.StartAnimation("Opacity", fadeOut);
-
-        var fadeIn = compositor.CreateScalarKeyFrameAnimation();
-        fadeIn.Duration = TimeSpan.FromMilliseconds(300);
-        fadeIn.DelayTime = TimeSpan.FromMilliseconds(90);
-        fadeIn.DelayBehavior = Microsoft.UI.Composition.AnimationDelayBehavior.SetInitialValueBeforeDelay;
-        fadeIn.InsertKeyFrame(0f, 0f);
-        fadeIn.InsertKeyFrame(1f, 1f, enterEase);
-        var riseIn = compositor.CreateVector3KeyFrameAnimation();
-        riseIn.Duration = TimeSpan.FromMilliseconds(340);
-        riseIn.DelayTime = TimeSpan.FromMilliseconds(90);
-        riseIn.DelayBehavior = Microsoft.UI.Composition.AnimationDelayBehavior.SetInitialValueBeforeDelay;
-        riseIn.InsertKeyFrame(0f, new Vector3(0, 6, 0));
-        riseIn.InsertKeyFrame(1f, Vector3.Zero, enterEase);
-
-        inVisual.StartAnimation("Opacity", fadeIn);
-        inVisual.StartAnimation("Translation", riseIn);
+        storyboard.Children.Add(fadeIn);
+        storyboard.Begin();
 
         int generation = ++_transitionGeneration;
-        _ = CompleteSwapAsync(outgoing, incoming, generation);
+        _ = CompleteSwapAsync(storyboard, outgoing, incoming, generation);
     }
 
     private int _transitionGeneration;
 
     private async Task CompleteSwapAsync(
+        Storyboard storyboard,
         FrameworkElement outgoing,
         FrameworkElement incoming,
         int generation)
     {
-        await Task.Delay(540);
+        await Task.Delay(220);
         if (_isClosed || generation != _transitionGeneration)
         {
             return;
         }
 
-        outgoing.Visibility = Visibility.Collapsed;
-        ResetVisual(outgoing);
+        // Land base values first, then release the storyboard's hold so the
+        // panel settles without a post-animation snap.
         incoming.Opacity = 1;
-        incoming.Translation = Vector3.Zero;
+        storyboard.Stop();
         _isAnimating = false;
     }
 
@@ -328,14 +320,21 @@ public sealed partial class OnboardingWindow : Window
         {
             for (int index = 0; index < StepCount; index++)
             {
-                GetStepPanel(index).Visibility = index == _stepIndex
+                var panel = GetStepPanel(index);
+                panel.Visibility = index == _stepIndex
                     ? Visibility.Visible
                     : Visibility.Collapsed;
+                panel.Opacity = 1;
+                panel.RenderTransform = null;
+                panel.IsHitTestVisible = true;
             }
         }
 
         switch (_stepIndex)
         {
+            case 1:
+                SetupDropStep();
+                break;
             case 2:
                 SetupSummonStep();
                 break;
@@ -382,7 +381,7 @@ public sealed partial class OnboardingWindow : Window
             return;
         }
 
-        NavigateToStep(target, forward: target > _stepIndex);
+        NavigateToStep(target);
     }
 
     // ════════════════════════════════════════════════════════════
@@ -405,19 +404,13 @@ public sealed partial class OnboardingWindow : Window
     internal static Microsoft.UI.Composition.Visual GetVisual(UIElement element)
     {
         ElementCompositionPreview.SetIsTranslationEnabled(element, true);
-        return ElementCompositionPreview.GetElementVisual(element);
-    }
-
-    internal static void ResetVisual(UIElement element)
-    {
-        var visual = GetVisual(element);
-        visual.StopAnimation("Opacity");
-        visual.StopAnimation("Translation");
-        visual.StopAnimation("Scale");
-        element.Opacity = 1;
-        element.Translation = Vector3.Zero;
-        visual.Opacity = 1;
-        visual.Scale = Vector3.One;
+        var visual = ElementCompositionPreview.GetElementVisual(element);
+        // Scale/Rotation animations pivot around CenterPoint, whose default
+        // (0,0) makes press/pop keyframes drift toward the top-left — anchor
+        // every scene element at its own center.
+        var size = element.ActualSize;
+        visual.CenterPoint = new Vector3(size.X / 2f, size.Y / 2f, 0f);
+        return visual;
     }
 
     // ════════════════════════════════════════════════════════════

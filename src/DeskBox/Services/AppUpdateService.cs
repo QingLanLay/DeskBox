@@ -252,7 +252,10 @@ public sealed partial class AppUpdateService : IAppUpdateService
         }
     }
 
-    public AppUpdateInstallResult StartInstallerHelper(string installerPath, bool silent = true)
+    public AppUpdateInstallResult StartInstallerHelper(
+        string installerPath,
+        bool silent = true,
+        string? appCultureName = null)
     {
         if (string.IsNullOrWhiteSpace(installerPath) || !File.Exists(installerPath))
         {
@@ -297,6 +300,18 @@ public sealed partial class AppUpdateService : IAppUpdateService
             if (silent)
             {
                 startInfo.ArgumentList.Add("--silent");
+                // The silent update's installer language follows the language
+                // the app is currently showing, so a user running DeskBox in
+                // English never gets the Chinese progress page replayed from
+                // a stale "Inno Setup: Language" value left by an old
+                // install. Never sent for interactive runs: a /LANG match
+                // suppresses Inno's Select Language dialog, which a manual
+                // Setup run must keep.
+                if (MapAppCultureToInstallerLanguage(appCultureName) is { } installerLanguage)
+                {
+                    startInfo.ArgumentList.Add("--installer-lang");
+                    startInfo.ArgumentList.Add(installerLanguage);
+                }
             }
 
             Process.Start(startInfo);
@@ -306,6 +321,36 @@ public sealed partial class AppUpdateService : IAppUpdateService
         {
             return AppUpdateInstallResult.Failed(ex.Message);
         }
+    }
+
+    /// <summary>
+    /// Maps the app's effective UI culture (LocalizationService.CurrentCultureName)
+    /// to the installer language names declared in installer/DeskBox.iss — the
+    /// exact reverse of InstallLanguageCode in that script, which writes
+    /// HKCU\Software\DeskBox\InstallLanguage after each install. Both sides
+    /// and the [Languages] sections must be extended together when a language
+    /// is added; DeskBox.Updater.KnownInstallerLanguages whitelists the same
+    /// names before they reach the installer command line.
+    /// </summary>
+    internal static string? MapAppCultureToInstallerLanguage(string? appCultureName)
+    {
+        return appCultureName switch
+        {
+            LocalizationService.LanguageChinese => "chinesesimplified",
+            LocalizationService.LanguageChineseTraditional => "chinesetraditional",
+            LocalizationService.LanguageEnglish => "english",
+            LocalizationService.LanguageJapanese => "japanese",
+            LocalizationService.LanguageGerman => "german",
+            LocalizationService.LanguagePortuguese => "brazilianportuguese",
+            LocalizationService.LanguageHindi => "hindi",
+            LocalizationService.LanguageSpanish => "spanish",
+            LocalizationService.LanguageFrench => "french",
+            LocalizationService.LanguageArabic => "arabic",
+            LocalizationService.LanguageBengali => "bengali",
+            LocalizationService.LanguageRussian => "russian",
+            LocalizationService.LanguageKorean => "korean",
+            _ => null,
+        };
     }
 
     internal static bool TryGetInstallDirectory(string? appPath, out string installDirectory)
@@ -560,21 +605,7 @@ public sealed partial class AppUpdateService : IAppUpdateService
                 {
                     ["en-US"] = release.Body
                 },
-            Summary =
-            {
-                ["zh-CN"] = $"DeskBox {version} 已发布，可从 GitHub Releases 下载更新。",
-                ["zh-TW"] = $"DeskBox {version} 已發布，可從 GitHub Releases 下載更新。",
-                ["en-US"] = $"DeskBox {version} is available from GitHub Releases.",
-                ["ja-JP"] = $"DeskBox {version} は GitHub Releases から入手できます。",
-                ["de-DE"] = $"DeskBox {version} ist über GitHub Releases verfügbar.",
-                ["pt-BR"] = $"O DeskBox {version} está disponível no GitHub Releases.",
-                ["hi-IN"] = $"DeskBox {version} GitHub Releases से उपलब्ध है।",
-                ["es-ES"] = $"DeskBox {version} está disponible en GitHub Releases.",
-                ["fr-FR"] = $"DeskBox {version} est disponible sur GitHub Releases.",
-                ["ar-SA"] = $"يتوفر DeskBox {version} في إصدارات GitHub.",
-                ["bn-BD"] = $"DeskBox {version} GitHub Releases-এ পাওয়া যাচ্ছে।",
-                ["ru-RU"] = $"DeskBox {version} доступен в GitHub Releases."
-            }
+            Summary = []
         };
     }
 

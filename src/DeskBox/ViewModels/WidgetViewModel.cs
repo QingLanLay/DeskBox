@@ -14,9 +14,11 @@ namespace DeskBox.ViewModels;
 /// </summary>
 public partial class WidgetViewModel : ObservableObject, IDisposable
 {
-    private const int IncrementalRefreshBatchThreshold = 24;
     private const int IconHydrationBatchSize = 8;
     private const int IconHydrationRetryCount = 3;
+    /// <summary>Collapsed stack tiles preview exactly four member icons
+    /// (PreviewOne..Four), so those members count as displayed.</summary>
+    private const int StackPreviewMemberKeepCount = 4;
     private static readonly TimeSpan[] s_iconHydrationRetryDelays =
     [
         TimeSpan.FromMilliseconds(450),

@@ -5,7 +5,7 @@ namespace DeskBox.Features.Backup;
 
 public enum BackupPageMessageKind
 {
-    None, PasswordSaved, PasswordMissing, PasswordSaveFailed,
+    None, PasswordSaved, PasswordMissing, PasswordSaveFailed, PasswordEmpty,
     ProbeSucceeded, ProbeFailed, ListFailed, NotYetVisible
 }
 
@@ -47,7 +47,8 @@ public sealed partial class BackupSettingsViewModel : ObservableObject, IDisposa
         Action<Exception> reportError,
         Func<TimeSpan, CancellationToken, Task>? delay = null,
         Func<string, string>? localize = null,
-        Func<string, object[], string>? format = null)
+        Func<string, object[], string>? format = null,
+        bool isStoreChannel = false)
     {
         _settings = settings;
         _tryEnqueue = tryEnqueue;
@@ -55,6 +56,7 @@ public sealed partial class BackupSettingsViewModel : ObservableObject, IDisposa
         _delay = delay ?? ((duration, token) => Task.Delay(duration, token));
         _localize = localize ?? (key => key);
         _format = format ?? ((key, args) => key);
+        ShowStoreUninstallNotice = isStoreChannel;
         _state = settings.Read();
         // The section binding surface (batch 49) projects the initial read;
         // the visit state machine below stays as batch 4 built it.
@@ -75,6 +77,17 @@ public sealed partial class BackupSettingsViewModel : ObservableObject, IDisposa
     public int VisitGeneration => _visitGeneration;
     public int EndpointGeneration => _endpointGeneration;
     public BackupEndpoint Endpoint => State.Endpoint;
+
+    /// <summary>
+    /// Store-channel disclosure: a Store-installed DeskBox keeps its local
+    /// backup snapshots inside the package's app-data folder, which Windows
+    /// clears on uninstall, so those builds surface the data-loss notice
+    /// above the cloud-backup section. Direct-installer builds keep local
+    /// snapshots in a folder that survives reinstalling, so the notice stays
+    /// hidden there. The channel arrives as a constructor primitive so the
+    /// feature stays free of adapter dependencies.
+    /// </summary>
+    public bool ShowStoreUninstallNotice { get; }
 
     public void Activate()
     {
@@ -227,17 +240,29 @@ public sealed partial class BackupSettingsViewModel : ObservableObject, IDisposa
         }
     }
 
-    public Task<bool> SaveCredentialAsync(string secret) => RunCommandAsync(async (endpoint, token) =>
+    public Task<bool> SaveCredentialAsync(string secret)
     {
-        await _settings.SaveAsync();
-        token.ThrowIfCancellationRequested();
-        await _settings.SaveCredentialAsync(endpoint, secret, token);
-    }, BackupPageMessageKind.PasswordSaved, BackupPageMessageKind.PasswordSaveFailed,
-        afterSuccess: () =>
+        // Inline validation via the connection-status message line; bypasses
+        // RunCommandAsync so the empty attempt does not flip IsBusy or clear
+        // a prior message.
+        if (string.IsNullOrWhiteSpace(secret))
         {
-            CredentialSaved = true;
-            _ = RefreshSnapshotsAsync();
-        });
+            Message = new(BackupPageMessageKind.PasswordEmpty);
+            return Task.FromResult(false);
+        }
+
+        return RunCommandAsync(async (endpoint, token) =>
+        {
+            await _settings.SaveAsync();
+            token.ThrowIfCancellationRequested();
+            await _settings.SaveCredentialAsync(endpoint, secret, token);
+        }, BackupPageMessageKind.PasswordSaved, BackupPageMessageKind.PasswordSaveFailed,
+            afterSuccess: () =>
+            {
+                CredentialSaved = true;
+                _ = RefreshSnapshotsAsync();
+            });
+    }
 
     public Task<bool> ProbeAsync(string? secretOverride) => RunCommandAsync(async (endpoint, token) =>
     {

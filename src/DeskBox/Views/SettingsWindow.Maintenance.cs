@@ -111,9 +111,14 @@ public sealed partial class SettingsWindow
 
             if (await dialog.ShowAsync() == ContentDialogResult.Primary)
             {
-                if (DragDropPermissionService.TryRelaunchAsExplorerUser())
+                if (DragDropPermissionService.TryRelaunchAsExplorerUser(
+                        $"--await-parent-exit {Environment.ProcessId}"))
                 {
-                    App.Current.Exit();
+                    // Same trap as the elevation notice: a bare inline
+                    // Application.Exit() is deferred through the XAML message
+                    // loop and never consumed. The full shutdown path carries
+                    // the deadline and Environment.Exit fallbacks.
+                    await App.Current.ShutdownForRestartAsync();
                 }
                 else
                 {
@@ -255,6 +260,19 @@ public sealed partial class SettingsWindow
             if (await dialog.ShowAsync() != ContentDialogResult.Primary)
             {
                 await App.Current.DataBackupService.CancelPendingRestoreAsync();
+                return;
+            }
+
+            // The pending marker was written before this dialog opened;
+            // persist the confirmation now so a crash, hidden window, or
+            // exit between here and the relaunch discards the restore at
+            // the next launch instead of applying it unconfirmed.
+            if (!await App.Current.DataBackupService.ConfirmPendingFullRestoreAsync())
+            {
+                await App.Current.DataBackupService.CancelPendingRestoreAsync();
+                await ShowInfoDialogAsync(
+                    _localizationService.T("Settings.DataBackup.RestoreFailedTitle"),
+                    _localizationService.Format("Settings.DataBackup.RestoreFailedBody", string.Empty));
                 return;
             }
 
@@ -530,7 +548,7 @@ public sealed partial class SettingsWindow
             Title = _localizationService.T("Settings.Dialog.RestoreTitle"),
             PrimaryButtonText = _localizationService.T("Common.Restore"),
             CloseButtonText = _localizationService.T("Common.Cancel"),
-            DefaultButton = ContentDialogButton.Primary,
+            DefaultButton = ContentDialogButton.Close,
             Content = new TextBlock
             {
                 Text = _localizationService.T("Settings.Dialog.RestoreBody"),

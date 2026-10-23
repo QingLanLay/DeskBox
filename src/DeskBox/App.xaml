@@ -3,6 +3,9 @@
     x:Class="DeskBox.App"
     xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
     xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+    xmlns:helpers="using:DeskBox.Helpers"
+    xmlns:media="using:Microsoft.UI.Xaml.Media"
+    xmlns:primitives="using:Microsoft.UI.Xaml.Controls.Primitives"
     xmlns:toolkit="using:CommunityToolkit.WinUI.Controls">
 
     <Application.Resources>
@@ -13,7 +16,7 @@
             </ResourceDictionary.MergedDictionaries>
 
             <ResourceDictionary.ThemeDictionaries>
-                <ResourceDictionary x:Key="Light">
+                                <ResourceDictionary x:Key="Light">
                     <SolidColorBrush x:Key="WidgetDragHandleBrush" Color="#6B6B6B" />
                     <SolidColorBrush x:Key="WidgetOverlaySurfaceBrush" Color="#FBFCFD" />
                     <SolidColorBrush x:Key="WidgetOverlayInputSurfaceBrush" Color="#FFFFFF" />
@@ -40,7 +43,7 @@
                     <Thickness x:Key="ComboBoxDropdownBorderPadding">0</Thickness>
                     <Thickness x:Key="ComboBoxDropdownContentMargin">4</Thickness>
                 </ResourceDictionary>
-                <ResourceDictionary x:Key="Dark">
+                                <ResourceDictionary x:Key="Dark">
                     <SolidColorBrush x:Key="WidgetDragHandleBrush" Color="#D6D6D6" />
                     <SolidColorBrush x:Key="WidgetOverlaySurfaceBrush" Color="#2A3038" />
                     <SolidColorBrush x:Key="WidgetOverlayInputSurfaceBrush" Color="#222830" />
@@ -51,6 +54,62 @@
                     <SolidColorBrush x:Key="DeskBoxNeutralFillTertiaryBrush" Color="#0AFFFFFF" />
                     <SolidColorBrush x:Key="DeskBoxNeutralLineBrush" Color="#8BFFFFFF" />
                     <SolidColorBrush x:Key="DeskBoxNeutralTextPrimaryBrush" Color="#FFFFFFFF" />
+                    <CornerRadius x:Key="OverlayCornerRadius">8</CornerRadius>
+                    <CornerRadius x:Key="ComboBoxItemCornerRadius">6</CornerRadius>
+                    <CornerRadius x:Key="ComboBoxHiglightBorderCornerRadius">8</CornerRadius>
+                    <CornerRadius x:Key="ComboBoxDropDownButtonBackgroundCornerRadius">6</CornerRadius>
+                    <Thickness x:Key="ComboBoxDropdownBorderThickness">1</Thickness>
+                    <Thickness x:Key="ComboBoxDropdownBorderPadding">0</Thickness>
+                    <Thickness x:Key="ComboBoxDropdownContentMargin">4</Thickness>
+                </ResourceDictionary>
+                <!-- Fallback theme dictionary (WinUI convention keeps dark
+                     values in Default). Light/Dark resolve first, so this is
+                     inert outside high contrast; HighContrast below owns the
+                     system-owned contrast mapping. -->
+                                <ResourceDictionary x:Key="Default">
+                    <SolidColorBrush x:Key="WidgetDragHandleBrush" Color="#D6D6D6" />
+                    <SolidColorBrush x:Key="WidgetOverlaySurfaceBrush" Color="#2A3038" />
+                    <SolidColorBrush x:Key="WidgetOverlayInputSurfaceBrush" Color="#222830" />
+                    <SolidColorBrush x:Key="WidgetOverlayStrokeBrush" Color="#52FFFFFF" />
+                    <SolidColorBrush x:Key="WidgetLayerFillSecondaryBrush" Color="#0DFFFFFF" />
+                    <SolidColorBrush x:Key="WidgetLayerStrokeBrush" Color="#20FFFFFF" />
+                    <SolidColorBrush x:Key="DeskBoxNeutralFillSecondaryBrush" Color="#0FFFFFFF" />
+                    <SolidColorBrush x:Key="DeskBoxNeutralFillTertiaryBrush" Color="#0AFFFFFF" />
+                    <SolidColorBrush x:Key="DeskBoxNeutralLineBrush" Color="#8BFFFFFF" />
+                    <SolidColorBrush x:Key="DeskBoxNeutralTextPrimaryBrush" Color="#FFFFFFFF" />
+                    <CornerRadius x:Key="OverlayCornerRadius">8</CornerRadius>
+                    <CornerRadius x:Key="ComboBoxItemCornerRadius">6</CornerRadius>
+                    <CornerRadius x:Key="ComboBoxHiglightBorderCornerRadius">8</CornerRadius>
+                    <CornerRadius x:Key="ComboBoxDropDownButtonBackgroundCornerRadius">6</CornerRadius>
+                    <Thickness x:Key="ComboBoxDropdownBorderThickness">1</Thickness>
+                    <Thickness x:Key="ComboBoxDropdownBorderPadding">0</Thickness>
+                    <Thickness x:Key="ComboBoxDropdownContentMargin">4</Thickness>
+                </ResourceDictionary>
+                <!-- High contrast stays system-owned: RequestedTheme is ignored
+                     by the framework under high contrast, so the widget windows
+                     and search popup resolve these keys against the system
+                     contrast palette. Without this dictionary the lookup chain
+                     (HighContrast -> Default at the time it was authored) found
+                     nothing and ThemeResource resolution failed at parse time.
+                     Overlay/layer surfaces map to the system window color
+                     (readable solid base — every consumer is a container
+                     background, nothing peeks through); strokes and handles map
+                     to the system window text color; the code-resolved
+                     DeskBoxNeutral washes map to Transparent. The DeskBoxNeutral*
+                     entries are inert here today: they are resolved from code by
+                     element ActualTheme (Light/Dark only) and are mirrored
+                     solely to keep the four dictionaries' key sets identical. -->
+                                <ResourceDictionary x:Key="HighContrast">
+                    <SolidColorBrush x:Key="WidgetDragHandleBrush" Color="{ThemeResource SystemColorWindowTextColor}" />
+                    <SolidColorBrush x:Key="WidgetOverlaySurfaceBrush" Color="{ThemeResource SystemColorWindowColor}" />
+                    <SolidColorBrush x:Key="WidgetOverlayInputSurfaceBrush" Color="{ThemeResource SystemColorWindowColor}" />
+                    <SolidColorBrush x:Key="WidgetOverlayStrokeBrush" Color="{ThemeResource SystemColorWindowTextColor}" />
+                    <SolidColorBrush x:Key="WidgetLayerFillSecondaryBrush" Color="{ThemeResource SystemColorWindowColor}" />
+                    <SolidColorBrush x:Key="WidgetLayerStrokeBrush" Color="{ThemeResource SystemColorWindowTextColor}" />
+                    <SolidColorBrush x:Key="DeskBoxNeutralFillSecondaryBrush" Color="Transparent" />
+                    <SolidColorBrush x:Key="DeskBoxNeutralFillTertiaryBrush" Color="Transparent" />
+                    <SolidColorBrush x:Key="DeskBoxNeutralLineBrush" Color="{ThemeResource SystemColorWindowTextColor}" />
+                    <SolidColorBrush x:Key="DeskBoxNeutralTextPrimaryBrush" Color="{ThemeResource SystemColorWindowTextColor}" />
                     <CornerRadius x:Key="OverlayCornerRadius">8</CornerRadius>
                     <CornerRadius x:Key="ComboBoxItemCornerRadius">6</CornerRadius>
                     <CornerRadius x:Key="ComboBoxHiglightBorderCornerRadius">8</CornerRadius>
@@ -86,6 +145,61 @@
                 <Setter Property="UseSystemFocusVisuals" Value="True" />
             </Style>
 
+            <!-- Anchor badge for svc:InfoTip explanation flyouts. Attached to
+                 SettingsCard/SettingsExpander elements; the badge button is
+                 manufactured by InfoTip.CreateAnchorButton and shown beside
+                 the card header text. Quiet by design: neutral translucent
+                 fill + secondary text color (subtler than the header), 13px
+                 circle, Segoe Fluent "?" glyph; hover softens via opacity. -->
+            <Style x:Key="InfoTipButtonStyle" TargetType="Button">
+                <Setter Property="Width" Value="16" />
+                <Setter Property="Height" Value="16" />
+                <Setter Property="MinWidth" Value="16" />
+                <Setter Property="MinHeight" Value="16" />
+                <Setter Property="Padding" Value="0" />
+                <Setter Property="CornerRadius" Value="8" />
+                <Setter Property="UseSystemFocusVisuals" Value="True" />
+                <Setter Property="Background" Value="{ThemeResource ControlFillColorDefaultBrush}" />
+                <Setter Property="Foreground" Value="{ThemeResource TextFillColorSecondaryBrush}" />
+                <Setter Property="Template">
+                    <Setter.Value>
+                        <ControlTemplate TargetType="Button">
+                            <Grid
+                                x:Name="Root"
+                                Background="{TemplateBinding Background}"
+                                CornerRadius="8">
+                                <ContentPresenter
+                                    HorizontalAlignment="Center"
+                                    VerticalAlignment="Center" />
+                                <VisualStateManager.VisualStateGroups>
+                                    <VisualStateGroup x:Name="CommonStates">
+                                        <VisualState x:Name="Normal" />
+                                        <VisualState x:Name="PointerOver">
+                                            <Storyboard>
+                                                <DoubleAnimation
+                                                    Storyboard.TargetName="Root"
+                                                    Storyboard.TargetProperty="Opacity"
+                                                    To="0.8"
+                                                    Duration="0:0:0.08" />
+                                            </Storyboard>
+                                        </VisualState>
+                                        <VisualState x:Name="Pressed">
+                                            <Storyboard>
+                                                <DoubleAnimation
+                                                    Storyboard.TargetName="Root"
+                                                    Storyboard.TargetProperty="Opacity"
+                                                    To="0.65"
+                                                    Duration="0:0:0.04" />
+                                            </Storyboard>
+                                        </VisualState>
+                                    </VisualStateGroup>
+                                </VisualStateManager.VisualStateGroups>
+                            </Grid>
+                        </ControlTemplate>
+                    </Setter.Value>
+                </Setter>
+            </Style>
+
             <!-- Shared ToggleSwitch template tuning for settings-style rows. -->
             <x:Double x:Key="ToggleSwitchOuterBorderStrokeThickness">0.25</x:Double>
             <x:Double x:Key="ToggleSwitchThemeMinWidth">72</x:Double>
@@ -109,6 +223,15 @@
                 <Setter Property="HorizontalAlignment" Value="Center" />
             </Style>
 
+            <!-- Every TextBlock opts into the widget text shadow. Only the
+                 application resources reach text expanded from data and
+                 control templates; WidgetTextShadow ignores texts outside
+                 windows marked with WidgetTextShadow.Scope and does nothing
+                 while the setting is off. -->
+            <Style TargetType="TextBlock">
+                <Setter Property="helpers:WidgetTextShadow.Cast" Value="True" />
+            </Style>
+
             <Style x:Key="WidgetEmptyStateTitleTextStyle" TargetType="TextBlock">
                 <Setter Property="HorizontalAlignment" Value="Center" />
                 <Setter Property="TextAlignment" Value="Center" />
@@ -128,6 +251,19 @@
             <Style TargetType="MenuFlyoutPresenter" BasedOn="{StaticResource DefaultMenuFlyoutPresenterStyle}">
                 <Setter Property="FontFamily" Value="{StaticResource DeskBoxMenuFontFamily}" />
                 <Setter Property="Padding" Value="{StaticResource DeskBoxMenuPresenterPadding}" />
+                <!-- Direct acrylic: the explicit DesktopAcrylicBackdrop (the
+                     default SystemBackdrop is null, which reads as solid)
+                     plus the platform's own default menu background, which
+                     is a near-transparent tint designed to sit on a
+                     backdrop. No first-paint solid override — the retired
+                     two-stage fade was removed by choice (2026-10-21); if
+                     first-frame bare text ever shows up, the lever is a
+                     constant low-alpha Background here, not an animation. -->
+                <Setter Property="SystemBackdrop">
+                    <Setter.Value>
+                        <media:DesktopAcrylicBackdrop />
+                    </Setter.Value>
+                </Setter>
             </Style>
 
             <Style TargetType="MenuFlyoutItem" BasedOn="{StaticResource DefaultMenuFlyoutItemStyle}">
@@ -255,6 +391,10 @@
                 <Setter Property="FontWeight" Value="SemiBold" />
                 <Setter Property="TextTrimming" Value="CharacterEllipsis" />
                 <Setter Property="VerticalAlignment" Value="Center" />
+                <!-- Explicitly styled text bypasses the implicit Cast style;
+                     without this setter the inline-editor titles render
+                     without the widget text shadow. -->
+                <Setter Property="helpers:WidgetTextShadow.Cast" Value="True" />
             </Style>
 
             <Style x:Key="WidgetConfirmCommandButtonStyle" TargetType="Button" BasedOn="{StaticResource DefaultButtonStyle}">

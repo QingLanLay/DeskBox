@@ -16,6 +16,35 @@ public sealed partial class OnboardingWindow
     private int _summonToggleCount;
 
     // ════════════════════════════════════════════════════════════
+    //  Step 2: destination card — shows the real managed root;
+    //  changes happen in Settings (AppearanceDetail hosts the
+    //  managed-storage cards, including the verified migration)
+    // ════════════════════════════════════════════════════════════
+
+    private void SetupDropStep()
+    {
+        // Slice reads (never the AppSettings facade passthroughs — the
+        // facade-access contract test pins this file's budget).
+        string root = SettingsService.NormalizeManagedStorageRootPath(
+            _settingsService.Settings.FileWidget.DefaultManagedStorageRootPath);
+        string subfolder = _localizationService.T("Widget.ManagedFolderBaseName");
+        string fullPath = System.IO.Path.Combine(root, subfolder);
+        Step2PathValue.Text = fullPath;
+        ToolTipService.SetToolTip(Step2PathValue, fullPath);
+        string rootTail = System.IO.Path.GetFileName(root.TrimEnd(
+            System.IO.Path.DirectorySeparatorChar,
+            System.IO.Path.AltDirectorySeparatorChar));
+        ScenePathChipText.Text = string.IsNullOrWhiteSpace(rootTail)
+            ? fullPath
+            : $"{rootTail} \\ {subfolder}";
+    }
+
+    private void Step2PathChange_Click(object sender, RoutedEventArgs e)
+    {
+        App.Current.ShowSettings("AppearanceDetail");
+    }
+
+    // ════════════════════════════════════════════════════════════
     //  Step 3: summon / dismiss (live, wired to the real toggle path)
     // ════════════════════════════════════════════════════════════
 

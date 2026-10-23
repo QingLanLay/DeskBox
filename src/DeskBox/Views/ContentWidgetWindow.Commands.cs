@@ -82,6 +82,8 @@ public sealed partial class ContentWidgetWindow
             ContentWidgetShell.SizeLockActionIcon,
             ContentWidgetShell.SizeLockFilledActionIcon,
             _config.IsSizeLocked);
+        // The lock button accessible names flip between lock/unlock wording.
+        ApplyTitleActionAccessibleNames();
     }
 
     // ── Button click handlers ──────────────────────────────────
@@ -431,6 +433,16 @@ public sealed partial class ContentWidgetWindow
             _config.IsSizeLocked,
             SetPositionLocked,
             SetSizeLocked));
+
+        // Hidden entirely on single-monitor systems, matching how Windows
+        // hides commands that cannot apply; null must not reach Items.Add.
+        if (WidgetScreenMenuBuilder.TryCreate(
+                App.Current.LocalizationService,
+                _config,
+                ApplyScreenBinding) is { } screenMenu)
+        {
+            flyout.Items.Add(screenMenu);
+        }
 
         if (_config.WidgetKind is WidgetKind.File)
         {
@@ -792,16 +804,30 @@ public sealed partial class ContentWidgetWindow
             folderName = _config.Name;
         }
 
+        // The confirmation flyout cannot soft-wrap, so a full path tail-truncates
+        // and hides the folder name; the message shows parent\name instead and
+        // falls back to the bare name when even that exceeds the widest
+        // single-line CJK budget.
+        string parentName = Path.GetFileName(
+            Path.GetDirectoryName(folderPath.TrimEnd('\\', '/')) ?? string.Empty);
+        string displayPath = string.IsNullOrEmpty(parentName)
+            ? folderName
+            : $"{parentName}\\{folderName}";
+        if (displayPath.Length > 48)
+        {
+            displayPath = folderName;
+        }
+
         int? itemCount = await CountTopLevelFolderEntriesAsync(folderPath);
         LocalizationService localization = App.Current.LocalizationService;
         string message = itemCount is int count
             ? localization.Format(
                 "Widget.DeleteManagedFolderConfirmMessage",
                 count,
-                folderPath)
+                displayPath)
             : localization.Format(
                 "Widget.DeleteManagedFolderConfirmMessageUnknownCount",
-                folderPath);
+                displayPath);
         MenuFlyout confirmation =
             WidgetCompactConfirmationMenuBuilder.CreateDeleteConfirmation(
             new WidgetCompactConfirmationOptions(
@@ -852,7 +878,8 @@ public sealed partial class ContentWidgetWindow
         {
             await widgetManager.RemoveWidgetAsync(
                 _config.Id,
-                removalAction);
+                removalAction,
+                HWnd);
         }
         catch (Exception ex)
         {
@@ -929,6 +956,23 @@ public sealed partial class ContentWidgetWindow
         SettingsService.UpdateWidget(_config);
         SynchronizeWidgetGroupLayout();
         ApplyLockActionIconState();
+    }
+
+    private void ApplyScreenBinding(WidgetScreenBindingMode mode, string? boundScreenId)
+    {
+        if (_config.ScreenBindingMode == mode &&
+            string.Equals(_config.BoundScreenId, boundScreenId, StringComparison.OrdinalIgnoreCase))
+        {
+            return;
+        }
+
+        // SafeFireAndForget keeps the observed-and-log failure semantics of a
+        // discarded task without letting an unobserved fault crash the app.
+        if (App.Current?.WidgetManager is { } widgetManager)
+        {
+            App.SafeFireAndForget(
+                () => widgetManager.ApplyScreenBindingAsync(_config.Id, mode, boundScreenId));
+        }
     }
 
     private void SetSizeLocked(bool value)
@@ -1118,7 +1162,7 @@ public sealed partial class ContentWidgetWindow
         ContentWidgetShell.TitleEditorContent = null;
         EndCompactInteraction();
         App.Current.WidgetManager?.EndWidgetInteraction(reason);
-        if (App.Current.WidgetManager?.RequestRestoreRaisedWidgetsToDesktopLayer(reason) == true)
+        if (App.Current.WidgetManager is { WidgetsRaisedFromTray: true })
         {
             return;
         }
@@ -1148,7 +1192,7 @@ public sealed partial class ContentWidgetWindow
         {
             EndCompactInteraction();
             App.Current.WidgetManager?.EndWidgetInteraction("content-flyout-closed");
-            if (App.Current.WidgetManager?.RequestRestoreRaisedWidgetsToDesktopLayer("content-flyout-closed") == true)
+            if (App.Current.WidgetManager is { WidgetsRaisedFromTray: true })
             {
                 return;
             }

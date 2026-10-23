@@ -53,10 +53,14 @@ public sealed class BackupRuntime : IBackupCommands, IAsyncDisposable
     public void RefreshOptions(bool checkSchedule = false)
     {
         if (IsStopping || _refreshingOptions) return;
+        bool changed;
         _refreshingOptions = true;
-        try { _backend.RefreshOptions(); }
+        try { changed = _backend.RefreshOptions(); }
         finally { _refreshingOptions = false; }
-        if (checkSchedule) OnTick();
+        // Any settings save funnels through here; only a real scheduling
+        // change warrants an immediate evaluation (the minute timer picks
+        // everything else up within one tick).
+        if (checkSchedule && changed) OnTick();
     }
 
     private void OnTick() => LastScheduledCheck = CheckScheduleAsync();

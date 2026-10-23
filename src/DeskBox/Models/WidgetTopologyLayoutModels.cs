@@ -9,7 +9,7 @@ namespace DeskBox.Models;
 /// </summary>
 public sealed class WidgetTopologyLayoutProfile
 {
-    public const int CurrentVersion = 1;
+    public const int CurrentVersion = 2;
 
     public int Version { get; set; } = CurrentVersion;
 
@@ -60,6 +60,29 @@ public sealed class WidgetSurfaceLayoutProfile
 {
     public string? PositionMonitorStableId { get; set; }
 
+    /// <summary>
+    /// Monitor binding intent carried through profiles unchanged. Binding is
+    /// topology-independent user intent, so profile switches reposition but
+    /// never rebind the surface.
+    /// </summary>
+    [JsonConverter(typeof(WidgetScreenBindingModeJsonConverter))]
+    public WidgetScreenBindingMode ScreenBindingMode { get; set; } = WidgetScreenBindingMode.Unbound;
+
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public string? BoundScreenId { get; set; }
+
+    /// <summary>
+    /// True when this entry records a placement the user made by hand (or the
+    /// initial layout captured on first run). Seeded/projected entries stay
+    /// false; captures never promote, they only preserve an existing flag.
+    /// Seeding prefers the newest authoritative entry for a surface.
+    /// </summary>
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public bool? IsAuthoritative { get; set; }
+
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public DateTimeOffset? AuthoredAtUtc { get; set; }
+
     public double X { get; set; }
 
     public double Y { get; set; }
@@ -88,4 +111,40 @@ public sealed class WidgetSurfaceLayoutProfile
 
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
     public double? CompactWidth { get; set; }
+
+    /// <summary>
+    /// Authored placement (spec D11). The fields above are its projection onto
+    /// the display's current geometry through the elastic plan.
+    /// </summary>
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public WidgetSurfaceLayoutReference? Reference { get; set; }
+}
+
+/// <summary>Placement in DIP against the effective work area (frame) it was authored on.</summary>
+public sealed class WidgetSurfaceLayoutReference
+{
+    public double FrameWidth { get; set; }
+
+    public double FrameHeight { get; set; }
+
+    public string? PositionAnchor { get; set; }
+
+    public double PositionMarginX { get; set; }
+
+    public double PositionMarginY { get; set; }
+
+    public double Width { get; set; }
+
+    public double Height { get; set; }
+
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public string? CompactPositionAnchor { get; set; }
+
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public double? CompactPositionMarginX { get; set; }
+
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public double? CompactPositionMarginY { get; set; }
+
+    internal WidgetSurfaceLayoutReference Clone() => (WidgetSurfaceLayoutReference)MemberwiseClone();
 }

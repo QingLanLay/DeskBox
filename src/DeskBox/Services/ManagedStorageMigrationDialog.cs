@@ -78,7 +78,7 @@ internal sealed class ManagedStorageMigrationDialog
                     Location(localization.T("Settings.Dialog.SafeMigrationTo"), newPath)
                 }},
                 new StackPanel { Spacing = 8, Children = { explanation, notes } },
-                status, detail, Footer(back, start)
+                status, detail, Footer(start, back)
             }
         };
         var dialog = Dialog(root, localization);
@@ -134,7 +134,10 @@ internal sealed class ManagedStorageMigrationDialog
                 if (closed) return;
                 problem = ManagedStorageMigrationPresentation.Classify(ex);
                 status.Text = localization.T("Settings.Dialog.SafeMigrationError." + problem);
-                technical.Text = ex.Message;
+                // The localized precautions stay in the expander; the raw English
+                // detail is log-only here. Only the run dialog exposes a
+                // technical-details expander for it.
+                App.Log($"[ManagedStorageMigration] Preview failed ({problem}): {ex}");
                 start.Content = localization.T(ManagedStorageMigrationPresentation.NeedsNewLocation(problem.Value)
                     ? "Settings.Dialog.SafeMigrationChooseLocation" : "Settings.Dialog.SafeMigrationRetry");
             }
@@ -195,7 +198,7 @@ internal sealed class ManagedStorageMigrationDialog
             Content = new ScrollViewer { MaxHeight = 130, Content = _technical }
         };
         var links = new StackPanel { Orientation = Orientation.Horizontal, MinHeight = 32, Spacing = 8, Children = { _openSource, _openTarget } };
-        var content = new StackPanel { Spacing = 12, Children = { stateArea, _details, links, Footer(_secondary, _primary) } };
+        var content = new StackPanel { Spacing = 12, Children = { stateArea, _details, links, Footer(_primary, _secondary) } };
         _dialog.Content = content;
         _sizing = new DialogSize(root, _dialog, content);
         _dialog.Closing += (_, args) =>
@@ -337,6 +340,16 @@ internal sealed class ManagedStorageMigrationDialog
         };
         dialog.Resources["ContentDialogMinWidth"] = 0d;
         dialog.Resources["ContentDialogMaxWidth"] = 520d;
+        // Self-drawn footer buttons mean no system Close button exists, so the
+        // built-in Esc accelerator has nothing to fire; route Esc to Hide()
+        // instead. While running, the Closing guard turns this into a stop
+        // request (same path as the stop button).
+        dialog.PreviewKeyDown += (_, args) =>
+        {
+            if (args.Key != VirtualKey.Escape) return;
+            args.Handled = true;
+            dialog.Hide();
+        };
         return dialog;
     }
 

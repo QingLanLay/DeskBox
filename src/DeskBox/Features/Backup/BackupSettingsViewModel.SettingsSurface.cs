@@ -149,6 +149,7 @@ public sealed partial class BackupSettingsViewModel
         OnPropertyChanged(nameof(LocalDirectoryDisplayText));
         OnPropertyChanged(nameof(LocalFallbackWarningText));
         OnPropertyChanged(nameof(ShowLocalFallbackWarning));
+        OnPropertyChanged(nameof(ShowCustomDirectoryRecoveryNote));
         OnPropertyChanged(nameof(ShowWebDavFields));
         OnPropertyChanged(nameof(ShowHttpWarning));
         OnPropertyChanged(nameof(StatusText));
@@ -270,6 +271,17 @@ public sealed partial class BackupSettingsViewModel
     public string LocalFallbackWarningText => _localFallbackWarningText;
 
     public bool ShowLocalFallbackWarning => !string.IsNullOrEmpty(_localFallbackWarningText);
+
+    /// <summary>
+    /// Disclosure for the wipe-recovery limitation: a custom snapshot folder
+    /// survives a configuration wipe, but the folder is only recorded inside
+    /// settings.json — after a wipe the automatic recovery offer cannot see
+    /// those snapshots, so restoring from them stays a manual step.
+    /// </summary>
+    public bool ShowCustomDirectoryRecoveryNote => _localDirectory.Length > 0;
+
+    public string CustomDirectoryRecoveryNoteText =>
+        Format("Settings.DataBackup.AutomaticBackupDirectory.CustomDirectoryRecoveryNote");
 
     /// <summary>
     /// Writes a custom snapshot folder chosen in the folder picker; empty
@@ -560,6 +572,8 @@ public sealed partial class BackupSettingsViewModel
                 Localize("Settings.CloudBackup.Password.Saved"),
             BackupPageMessageKind.PasswordMissing =>
                 Localize("Settings.CloudBackup.Password.NotSaved"),
+            BackupPageMessageKind.PasswordEmpty =>
+                Localize("Settings.CloudBackup.Password.EmptyBody"),
             BackupPageMessageKind.PasswordSaveFailed =>
                 Format("Settings.CloudBackup.Password.SaveFailed", message.Error ?? string.Empty),
             BackupPageMessageKind.ProbeSucceeded =>
@@ -627,6 +641,7 @@ public sealed partial class BackupSettingsViewModel
         OnPropertyChanged(nameof(LocalFallbackWarningText));
         OnPropertyChanged(nameof(ShowLocalFallbackWarning));
         OnPropertyChanged(nameof(LocalDirectoryDisplayText));
+        OnPropertyChanged(nameof(ShowCustomDirectoryRecoveryNote));
     }
 
     // --- Compatibility diagnostics (computed on the shell, pushed in) ---
