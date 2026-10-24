@@ -255,6 +255,71 @@ public sealed class OrganizerServiceTests : IDisposable
             operation.CompletedItems.Single().DestinationPath));
     }
 
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task OrganizeDropAsync_ManagedProgressPreservesBothFilesOnNameCollision(bool move)
+    {
+        string sourceDirectory = Directory.CreateDirectory(Path.Combine(_tempRoot, "collision-source")).FullName;
+        string targetDirectory = Directory.CreateDirectory(Path.Combine(_tempRoot, "collision-target")).FullName;
+        string sourcePath = Path.Combine(sourceDirectory, "note.txt");
+        string existingPath = Path.Combine(targetDirectory, "note.txt");
+        await File.WriteAllTextAsync(sourcePath, "incoming");
+        await File.WriteAllTextAsync(existingPath, "existing");
+        var updates = new List<FileService.FileTransferProgress>();
+
+        OrganizerOperationResult operation = await _organizerService.OrganizeDropAsync(
+            CreateWidget(targetDirectory), "Widget", [sourcePath], move,
+            useShellProgress: false, progress: new InlineProgress<FileService.FileTransferProgress>(updates.Add));
+
+        OrganizationHistoryItem completed = Assert.Single(operation.CompletedItems);
+        Assert.Equal(Path.Combine(targetDirectory, "note (2).txt"), completed.DestinationPath);
+        Assert.Equal("incoming", await File.ReadAllTextAsync(completed.DestinationPath));
+        Assert.Equal("existing", await File.ReadAllTextAsync(existingPath));
+        Assert.Equal(!move, File.Exists(sourcePath));
+        Assert.Contains(updates, update => update.Phase == FileService.FileTransferPhase.Completed);
+        Assert.DoesNotContain(updates, update => update.Phase == FileService.FileTransferPhase.DelegatedToShell);
+        Assert.Equal(move, operation.History.CanUndo);
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task OrganizeDropAsync_ManagedFailureKeepsCompletedReceiptsAndUnprocessedSource(bool move)
+    {
+        string sourceDirectory = Directory.CreateDirectory(Path.Combine(_tempRoot, "partial-source")).FullName;
+        string targetDirectory = Directory.CreateDirectory(Path.Combine(_tempRoot, "partial-target")).FullName;
+        string firstPath = Path.Combine(sourceDirectory, "first.txt");
+        string lockedPath = Path.Combine(sourceDirectory, "locked.txt");
+        await File.WriteAllTextAsync(firstPath, "first");
+        await File.WriteAllTextAsync(lockedPath, "locked");
+        using var heldFile = new FileStream(lockedPath, FileMode.Open, FileAccess.ReadWrite, FileShare.None);
+        var updates = new List<FileService.FileTransferProgress>();
+
+        FileService.FileTransferPartialFailureException failure =
+            await Assert.ThrowsAsync<FileService.FileTransferPartialFailureException>(() =>
+                _organizerService.OrganizeDropAsync(
+                    CreateWidget(targetDirectory), "Widget", [firstPath, lockedPath], move,
+                    useShellProgress: false, progress: new InlineProgress<FileService.FileTransferProgress>(updates.Add)));
+
+        FileService.FileTransferResult completed = Assert.Single(failure.CompletedResults);
+        Assert.Equal(firstPath, completed.SourcePath);
+        Assert.Equal("first", await File.ReadAllTextAsync(completed.DestinationPath));
+        Assert.Equal(!move, File.Exists(firstPath));
+        Assert.True(File.Exists(lockedPath));
+        Assert.False(File.Exists(Path.Combine(targetDirectory, "locked.txt")));
+        OrganizationHistoryEntry history = Assert.Single(_settingsService.OrganizationHistory.Entries);
+        Assert.Equal(completed.DestinationPath, Assert.Single(history.Items).DestinationPath);
+        Assert.Equal(move, history.CanUndo);
+        Assert.Equal(FileService.FileTransferPhase.Failed, updates[^1].Phase);
+        Assert.False(_fileService.TransferSessions.GetState(lockedPath).IsActive);
+    }
+
+    private sealed class InlineProgress<T>(Action<T> callback) : IProgress<T>
+    {
+        public void Report(T value) => callback(value);
+    }
+
     private static WidgetConfig CreateWidget(string folderPath, bool followsDefaultStoragePath = true)
     {
         return new WidgetConfig

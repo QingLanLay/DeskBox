@@ -4214,10 +4214,13 @@ public sealed partial class FileSurfaceContent :
                 }
                 else
                 {
+                    // Keep ordinary imports on the surface's managed progress
+                    // and cancellation path. Shell's progress window can block
+                    // inside third-party IME activation before any file moves.
                     IReadOnlyList<string> completed = await ViewModel.ImportPathsAsync(
                         regularPaths,
                         moveWhenMapped,
-                        useShellProgress: true,
+                        useShellProgress: false,
                         ownerWindowHandle: _hostWindowHandle,
                         progress: progress,
                         cancellationToken: ActiveImportCancellationToken,

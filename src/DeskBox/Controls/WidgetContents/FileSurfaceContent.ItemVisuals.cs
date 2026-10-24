@@ -775,7 +775,7 @@ public sealed partial class FileSurfaceContent
                             move,
                             progress,
                             ActiveImportCancellationToken,
-                            useShellProgress: true,
+                            useShellProgress: false,
                             ownerWindowHandle: _hostWindowHandle));
                     }
                 }
@@ -1015,7 +1015,7 @@ public sealed partial class FileSurfaceContent
                         move,
                         progress,
                         ActiveImportCancellationToken,
-                        useShellProgress: true,
+                        useShellProgress: false,
                         ownerWindowHandle: _hostWindowHandle));
                 }
             }

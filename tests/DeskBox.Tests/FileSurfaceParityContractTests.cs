@@ -214,7 +214,7 @@ public sealed class FileSurfaceParityContractTests
     }
 
     [Fact]
-    public void InteractiveImports_DelegateCopyAndMoveToModernWindowsShell()
+    public void FileImports_UseManagedProgressAndKeepExplicitShellTransfersAvailable()
     {
         string root = FindRepositoryRoot();
         string fileService = File.ReadAllText(Path.Combine(
@@ -249,8 +249,13 @@ public sealed class FileSurfaceParityContractTests
                 "src/DeskBox/Helpers/BoundedStaOperationRunner.cs")),
             StringComparison.Ordinal);
         Assert.Contains("fileOperation.SetOwnerWindow(ownerWindowHandle)", shellTransfer, StringComparison.Ordinal);
-        Assert.Contains("useShellProgress: true", surface, StringComparison.Ordinal);
-        Assert.Contains("useShellProgress: true", itemVisuals, StringComparison.Ordinal);
+        // Ordinary imports must keep their progress and cancellation on the
+        // existing surface. The native progress window can block indefinitely
+        // in third-party IME activation, even when the UI thread is responsive.
+        Assert.DoesNotContain("useShellProgress: true", surface, StringComparison.Ordinal);
+        Assert.DoesNotContain("useShellProgress: true", itemVisuals, StringComparison.Ordinal);
+        Assert.Contains("useShellProgress: false", surface, StringComparison.Ordinal);
+        Assert.Contains("useShellProgress: false", itemVisuals, StringComparison.Ordinal);
         Assert.Contains(
             "case FileService.FileTransferPhase.DelegatedToShell:",
             progressUi,
@@ -286,7 +291,7 @@ public sealed class FileSurfaceParityContractTests
     }
 
     [Fact]
-    public void InteractiveRouting_ShellOwnsEveryMoveAndCopy()
+    public void ExplicitShellRouting_PreservesTheModernEngineForNativeDialogsAndElevation()
     {
         string source = File.ReadAllText(Path.Combine(
             FindRepositoryRoot(),
@@ -294,8 +299,8 @@ public sealed class FileSurfaceParityContractTests
 
         // The legacy SHFileOperation bridge was retired (2026-10-13): it
         // ran same-volume moves on an unpumped MTA thread-pool thread with
-        // no watchdog, which could hang a paste forever. Every build channel
-        // and volume relationship now reaches the modern STA engine.
+        // no watchdog, which could hang a paste forever. Explicit Shell callers
+        // still use the modern STA engine; ordinary imports opt out above.
         Assert.DoesNotContain(
             "ExecuteShellMovePlanAsync",
             source,
@@ -319,8 +324,8 @@ public sealed class FileSurfaceParityContractTests
             StringComparison.Ordinal);
         Assert.True(
             modernEngine > interactiveGate,
-            "Interactive imports must reach the modern Shell engine.");
-        // Interactive transfers must not fall back to the managed engine:
+            "Explicit Shell requests must reach the modern Shell engine.");
+        // Explicit Shell transfers must not fall back to the managed engine:
         // its CreateFileW(DELETE) source probe fails raw with access denied
         // on readable-but-not-deletable sources such as Public Desktop
         // shortcuts (feedback #138).
@@ -331,7 +336,7 @@ public sealed class FileSurfaceParityContractTests
         Assert.True(
             managedTransfer < 0 || managedTransfer > modernEngine,
             "The managed engine must never preempt the Shell engine for " +
-            "interactive transfers.");
+            "explicit Shell transfers.");
     }
 
     [Fact]
