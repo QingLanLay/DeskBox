@@ -262,6 +262,12 @@ public sealed class DeskBoxDataBackupServiceTests : IDisposable
             Path.Combine("data", "settings.json"));
         Assert.True(File.Exists(stagedSettingsPath));
 
+        // Creation precedes the asynchronous copy and source validation.
+        // The metadata gate is released only after that staging phase ends.
+        SemaphoreSlim metadataGate = SettingsService.FileWriteLockFor(dataDirectory);
+        await metadataGate.WaitAsync();
+        metadataGate.Release();
+
         await File.WriteAllTextAsync(settingsPath, "{\"theme\":\"Dark\"}");
         await File.WriteAllBytesAsync(largeFilePath, [9, 8, 7]);
         string backupPath = await exportTask;
